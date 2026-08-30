@@ -12,6 +12,8 @@ import { devinCliStatus } from "./devin-cli-status.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { antigravityOAuthStatus } from "./antigravity-oauth-status.mjs";
 import { removeAntigravityToken } from "./antigravity-oauth-session.mjs";
+import { openWebUiSessionStatus, removeOpenWebUiSession } from "./openwebui-session.mjs";
+import { signInOpenWebUi } from "./openwebui-onboarding.mjs";
 import { KIMI_CLI_NPM_PACKAGE } from "./kimi-oauth-onboarding.mjs";
 import { MODELS, PROVIDERS, providerNeedsNoKey } from "./model-registry.mjs";
 import {
@@ -106,6 +108,21 @@ export function providerOnboardingSnapshot() {
   return {
     providers: selectable.map((provider) => {
       const catalogSources = providerCatalogSources(provider.id);
+      if (provider.authProfile === "openwebui-session") {
+        const status = openWebUiSessionStatus();
+        return {
+          id: provider.id,
+          displayName: provider.displayName,
+          kind: "oauth",
+          credentialLabel: "SSO session",
+          configured: status.configured,
+          disconnectable: status.configured,
+          cliInstalled: true,
+          cliRunnable: true,
+          action: status.configured ? "ready" : "login",
+          ...(catalogSources.length ? { catalogSources } : {}),
+        };
+      }
       if (provider.kind === "oauth") {
         // Antigravity has no vendor CLI to install or reuse: its sign-in is
         // this router's own browser OAuth flow.
@@ -236,7 +253,15 @@ export function installOauthCli(providerId) {
 // CLI waits on a terminal it will never get.
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
 
-export async function loginOauthProvider(providerId) {
+export async function loginOauthProvider(providerId, { origin } = {}) {
+  if (providerId === "openwebui") {
+    await signInOpenWebUi({ origin });
+    if (!openWebUiSessionStatus().configured) {
+      throw new Error("Sign-in finished without a usable Open WebUI session. Please try again.");
+    }
+    await forgetProviderCatalogFamilyCache(providerId);
+    return;
+  }
   if (providerId === "antigravity-oauth") {
     const { signInAntigravity } = await import("./antigravity-oauth-onboarding.mjs");
     await signInAntigravity();
@@ -293,6 +318,17 @@ export function saveApiCredential(providerId, value) {
 // macOS Keychain or the environment, so report what still resolves afterwards
 // instead of claiming the credential itself is gone.
 export async function removeApiCredential(providerId) {
+  if (providerId === "openwebui") {
+    const provider = PROVIDERS.get(providerId);
+    const removedFiles = removeOpenWebUiSession();
+    disableProvider(providerId);
+    return {
+      provider: providerId,
+      displayName: provider?.displayName || "Open WebUI",
+      removedFiles,
+      stillConfigured: false,
+    };
+  }
   if (providerId === "antigravity-oauth") {
     const provider = PROVIDERS.get(providerId);
     const removedFiles = (await removeAntigravityToken()) ? 1 : 0;

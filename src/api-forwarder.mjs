@@ -74,6 +74,11 @@ import {
   endpointCapabilityError,
   supportsOpenAIModelEndpoint,
 } from "./openai-endpoint-policy.mjs";
+import {
+  fetchOpenWebUi,
+  openWebUiApiUrl,
+  validateOpenWebUiSession,
+} from "./openwebui-session.mjs";
 
 installStableFetchTransport();
 
@@ -587,6 +592,13 @@ function stripSearchContentTypes(tools) {
   return stripped ? repaired : tools;
 }
 
+function upstreamProtocol(provider, model) {
+  if (provider.authProfile === "openwebui-session") {
+    return model.openWebUiProtocol === "messages" ? "anthropic" : "openai";
+  }
+  return provider.protocol;
+}
+
 function normalizeBody(buffer, contentType, route) {
   if (!buffer.length || !String(contentType || "").includes("application/json")) {
     const error = new Error("API-provider requests require a JSON body.");
@@ -614,10 +626,11 @@ function normalizeBody(buffer, contentType, route) {
     error.status = 400;
     throw error;
   }
+  const protocol = upstreamProtocol(provider, model);
   const expectedRoute =
-    provider.protocol === "anthropic"
+    protocol === "anthropic"
       ? "/messages"
-      : provider.protocol === "openai-responses"
+      : protocol === "openai-responses"
         ? "/responses"
         : "/chat/completions";
   if (
@@ -635,24 +648,10 @@ function normalizeBody(buffer, contentType, route) {
     throw error;
   }
 
-  payload.model = model.upstreamModel;
-  // Embeddings have their own wire contract. Keep every provider-specific
-  // input field unchanged and never send the body through a chat adapter.
-  if (route === "/embeddings") {
-    const endpoint = endpointForModel(model);
-    return {
-      body: Buffer.from(JSON.stringify(payload), "utf8"),
-      model,
-      provider,
-      endpoint,
-      payload,
-    };
-  }
-
   // Responses providers get one checked boundary here. The request remains a
   // Responses request, but legacy aliases are normalized before any provider
   // sees it and the original payload remains available for retries.
-  if (provider.protocol === "openai-responses") {
+  if (protocol === "openai-responses") {
     payload = normalizeOpenAIRequest(payload);
   }
 
@@ -664,7 +663,7 @@ function normalizeBody(buffer, contentType, route) {
   if (
     route === "/chat/completions" &&
     payload.stream === true &&
-    (provider.protocol === undefined || provider.protocol === "openai")
+    (protocol === undefined || protocol === "openai")
   ) {
     const streamOptions = payload.stream_options;
     payload.stream_options = {
@@ -675,6 +674,7 @@ function normalizeBody(buffer, contentType, route) {
     };
   }
 
+  payload.model = model.upstreamModel;
   // Google's OpenAI-compatible endpoint (/v1beta/openai/chat/completions)
   // rejects any field outside the OpenAI schema with a hard 400
   // (INVALID_ARGUMENT: Unknown name "..."). Two such fields reach this hop for
@@ -692,8 +692,12 @@ function normalizeBody(buffer, contentType, route) {
     delete payload.logit_bias;
   }
   // Fireworks rejects this OpenAI search parameter instead of ignoring it.
-  // Other provider payloads keep it unchanged.
-  if (provider.id === "fireworks") delete payload.web_search_options;
+  // Open WebUI curation may record the same measured constraint for one
+  // account-visible model without guessing from its opaque upstream id.
+  if (
+    provider.id === "fireworks" ||
+    (provider.authProfile === "openwebui-session" && model.openWebUiWebSearchOptions === "drop")
+  ) delete payload.web_search_options;
   // Meta refuses `search_content_types` on anything but a `web_search_preview`
   // tool, and Codex only ever sends the current spelling: its hosted search
   // tool is `type: "web_search"`, carrying search_content_types beside
@@ -738,7 +742,7 @@ function normalizeBody(buffer, contentType, route) {
   // the bridge lives. Say that in the model's own turn instead of dropping the
   // part or letting the provider refuse the whole conversation.
   if (!supportsImageInput(model)) {
-    const textPartType = provider.protocol === "openai-responses" ? "input_text" : "text";
+    const textPartType = protocol === "openai-responses" ? "input_text" : "text";
     const reason =
       `${model.displayName || model.gatewayModel} cannot read images, and an image sent ` +
       "straight to the gateway skips the router's vision bridge";
@@ -756,7 +760,7 @@ function normalizeBody(buffer, contentType, route) {
     }
   }
   if (model.requestProfile === "codex-encrypted-schema") {
-    stripEncryptedToolSchemaAnnotations(payload, provider.protocol);
+    stripEncryptedToolSchemaAnnotations(payload, protocol);
   }
   if (model.requestProfile === "clinepass") {
     delete payload.reasoning_effort;
@@ -976,7 +980,8 @@ function normalizeBody(buffer, contentType, route) {
     provider,
     endpoint,
     payload,
-    responseAdapter: provider.protocol === "openai-responses" ? "responses" : undefined,
+    responseAdapter: protocol === "openai-responses" ? "responses" : undefined,
+    protocol,
   };
 }
 
@@ -995,7 +1000,10 @@ function upstreamHeaders(requestHeaders, body, apiKey, provider, extraHeaders = 
   ]);
   for (const [name, value] of Object.entries(requestHeaders)) {
     const lower = name.toLowerCase();
-    if (HOP_BY_HOP_HEADERS.has(lower) || lower === "authorization" || lower === "x-api-key") continue;
+    if (
+      HOP_BY_HOP_HEADERS.has(lower) ||
+      lower === "authorization" || lower === "x-api-key" || lower === "cookie" || lower === "set-cookie"
+    ) continue;
     if (provider.authProfile === "github-copilot" && providerIdentityHeaders.has(lower)) continue;
     if (lower.startsWith("x-msh-") || lower.startsWith("x-codex-")) continue;
     if (lower.startsWith("x-openai-") || lower === "chatgpt-account-id") continue;
@@ -1009,6 +1017,8 @@ function upstreamHeaders(requestHeaders, body, apiKey, provider, extraHeaders = 
     // free-model subset, a single allowlisted community endpoint, or the
     // generic-provider boundary which injects its own confined credential.
     // Never forward the gateway's internal bearer token to any of them.
+  } else if (provider.authProfile === "openwebui-session") {
+    headers.Authorization = `Bearer ${apiKey}`;
   } else if (provider.protocol === "anthropic") {
     headers["x-api-key"] = apiKey;
     headers["anthropic-version"] ||= "2023-06-01";
@@ -1176,7 +1186,7 @@ async function handleRequest(request, response) {
   }
   if (
     request.method !== "POST" ||
-    !["/chat/completions", "/messages", "/responses", "/embeddings"].includes(route)
+    !["/chat/completions", "/messages", "/responses"].includes(route)
   ) {
     writeJson(response, 404, {
       error: { type: "proxy_route_not_found", message: "Unsupported API-provider route." },
@@ -1191,6 +1201,29 @@ async function handleRequest(request, response) {
   response.once("close", () => {
     if (!response.writableEnded) controller.abort();
   });
+
+  // A saved Open WebUI JWT is only a hint. Validate it against the model
+  // endpoint for every routed request so expiry/revocation is reported before
+  // we send a prompt, and never turn a background service into a browser flow.
+  let openWebUiSession;
+  if (normalized.provider.authProfile === "openwebui-session") {
+    try {
+      openWebUiSession = await validateOpenWebUiSession({
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      });
+      await openWebUiSession.response.body?.cancel?.().catch(() => undefined);
+    } catch (error) {
+      writeJson(response, error?.status || 502, {
+        error: {
+          type: error?.code || "openwebui_session_validation_failed",
+          provider: "openwebui",
+          message: error instanceof Error ? error.message : "Open WebUI session validation failed.",
+        },
+      });
+      return;
+    }
+  }
 
   // Generic providers own a stricter request boundary than checked-in routes:
   // it re-reads the operator descriptor, revalidates DNS, rejects redirects,
@@ -1306,7 +1339,7 @@ async function handleRequest(request, response) {
     }
     return outcome;
   };
-  if (!poolRouting.pooled && route !== "/embeddings" && commandCode?.route === "plan") {
+  if (!poolRouting.pooled && commandCode?.route === "plan") {
     await relayThroughPlan();
     return;
   }
@@ -1320,7 +1353,7 @@ async function handleRequest(request, response) {
   let target;
   let upstream;
   let deferredUpstreamLimits;
-  if (poolRouting.pooled && route !== "/embeddings") {
+  if (poolRouting.pooled) {
     const pooled = await runProviderApiKeyAttempts(normalized.endpoint.id, {
       filePath: undefined,
       resolveCredential: (credentialId) =>
@@ -1483,28 +1516,49 @@ async function handleRequest(request, response) {
       headers: result.headers,
     });
   } else {
-    session = await upstreamSession(
-      normalized.provider,
-      credential,
-      normalized.payload,
-      {},
-      normalized.endpoint,
-    );
-    target = `${session.baseUrl}${route}${requestUrl.search}`;
-    upstream = await fetch(target, {
-      method: request.method,
-      headers: upstreamHeaders(
-        request.headers,
-        upstreamBody,
-        session.apiKey,
+    if (normalized.provider.authProfile === "openwebui-session") {
+      session = { baseUrl: openWebUiSession.baseUrl, apiKey: credential.value, headers: {} };
+      const apiPath = normalized.protocol === "anthropic"
+        ? "api/v1/messages"
+        : "api/chat/completions";
+      target = openWebUiApiUrl(session.baseUrl, apiPath).toString();
+      upstream = await fetchOpenWebUi(session.baseUrl, session.apiKey, apiPath, {
+        method: request.method,
+        headers: upstreamHeaders(
+          request.headers,
+          upstreamBody,
+          session.apiKey,
+          normalized.provider,
+          session.headers,
+          normalized.endpoint,
+        ),
+        body: upstreamBody,
+        signal: controller.signal,
+      });
+    } else {
+      session = await upstreamSession(
         normalized.provider,
-        session.headers,
+        credential,
+        normalized.payload,
+        {},
         normalized.endpoint,
-      ),
-      body: upstreamBody,
-      signal: controller.signal,
-      redirect: route === "/embeddings" ? "error" : "follow",
-    });
+      );
+      target = `${session.baseUrl}${route}${requestUrl.search}`;
+      upstream = await fetch(target, {
+        method: request.method,
+        headers: upstreamHeaders(
+          request.headers,
+          upstreamBody,
+          session.apiKey,
+          normalized.provider,
+          session.headers,
+          normalized.endpoint,
+        ),
+        body: upstreamBody,
+        signal: controller.signal,
+        redirect: route === "/embeddings" ? "error" : "follow",
+      });
+    }
     // Embeddings can be billed even when the response never reaches the
     // caller. Select one pool credential above and record its outcome, but do
     // not replay the same input through another credential after a 401, 429,
@@ -1523,12 +1577,7 @@ async function handleRequest(request, response) {
   }
   // Account routing can change with plan or policy. Re-resolve and replay once
   // before any response byte reaches the caller; every other status is relayed.
-  if (
-    !poolRouting.pooled &&
-    route !== "/embeddings" &&
-    normalized.provider.authProfile === "github-copilot" &&
-    upstream.status === 401
-  ) {
+  if (!poolRouting.pooled && normalized.provider.authProfile === "github-copilot" && upstream.status === 401) {
     await upstream.body?.cancel().catch(() => undefined);
     session = await upstreamSession(
       normalized.provider,
@@ -1557,12 +1606,7 @@ async function handleRequest(request, response) {
   // because only its body distinguishes "this plan has no API access" from
   // every other 403 a gateway can send, and a plan refusal must not reach the
   // caller as a failed turn when a working route exists.
-  if (
-    commandCode &&
-    !poolRouting.pooled &&
-    route !== "/embeddings" &&
-    upstream.status === 403
-  ) {
+  if (commandCode && !poolRouting.pooled && upstream.status === 403) {
     const raw = (await readResponseBody(upstream, { signal: controller.signal })).toString("utf8");
     let refusal;
     try {

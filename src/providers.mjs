@@ -6,6 +6,9 @@ import { devinCliStatus } from "./devin-cli-status.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { antigravityOAuthStatus } from "./antigravity-oauth-status.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
+import { openWebUiSessionStatus, removeOpenWebUiSession } from "./openwebui-session.mjs";
+import { signInOpenWebUi, requestedOpenWebUiOrigin } from "./openwebui-onboarding.mjs";
+import { forgetProviderCatalogFamilyCache } from "./provider-catalogs.mjs";
 import {
   effectiveProviderCredentialStatus,
   providerApiKeyAuthoritySnapshot,
@@ -80,10 +83,14 @@ const SIGN_IN_STATUS = Object.freeze({
     setup: `run \`${providersCommand("login", "antigravity-oauth")}\``,
   },
   "devin-cli": { status: devinCliStatus, setup: "run `devin auth login`" },
+  openwebui: {
+    status: openWebUiSessionStatus,
+    setup: `run \`${providersCommand("login", "openwebui")} https://chat.example.com\``,
+  },
 });
 
 function configured(provider, poolAuthoritySnapshot) {
-  if (provider.kind === "oauth") {
+  if (provider.kind === "oauth" || provider.authProfile === "openwebui-session") {
     return Boolean(SIGN_IN_STATUS[provider.id]?.status().configured);
   }
   return providerNeedsNoKey(provider)
@@ -292,8 +299,30 @@ async function main() {
   // canonical provider the user actually changed.
   const provider = PROVIDERS.get(canonicalProviderId(providerId ?? ""));
   if (command === "login") {
+    if (provider?.id === "openwebui") {
+      const args = process.argv.slice(4);
+      const unsafe = args.includes("--allow-insecure-http");
+      const origins = args.filter((arg) => arg !== "--allow-insecure-http");
+      if (origins.length > 1) {
+        throw new Error("Usage: providers login openwebui [ORIGIN] [--allow-insecure-http]");
+      }
+      const result = await signInOpenWebUi({
+        origin: requestedOpenWebUiOrigin(origins[0]),
+        allowInsecureHttp: unsafe,
+      });
+      await forgetProviderCatalogFamilyCache(provider.id);
+      if (readProviderSelection().includes(provider.id)) {
+        refreshTargetPickerIfInstalled();
+      }
+      process.stdout.write(
+        result.reused
+          ? "Open WebUI session is already valid; no browser was opened.\n"
+          : "Open WebUI SSO session saved to protected local storage.\n",
+      );
+      return;
+    }
     if (provider?.id !== "antigravity-oauth") {
-      throw new Error("Usage: providers login antigravity-oauth");
+      throw new Error("Usage: providers login openwebui [ORIGIN] [--allow-insecure-http] | login antigravity-oauth");
     }
     // Antigravity is the one OAuth provider whose browser flow belongs to the
     // router. Kimi and Grok retain their official CLI sessions, which need a
@@ -315,14 +344,27 @@ async function main() {
     );
     return;
   }
+  if (command === "logout") {
+    if (provider?.id !== "openwebui") {
+      throw new Error("Usage: providers logout openwebui");
+    }
+    await withModelOverlayLock(async () => {
+      removeOpenWebUiSession();
+      await forgetProviderCatalogFamilyCache(provider.id);
+      disableProvider(provider.id);
+      refreshTargetPickerIfInstalled();
+    });
+    process.stdout.write("Open WebUI SSO session and local browser state were removed.\n");
+    return;
+  }
   if (!provider || !["enable", "disable"].includes(command)) {
     throw new Error(
-      "Usage: providers [list [--json]|login antigravity-oauth|enable ID|disable ID|generic ...]",
+      "Usage: providers [list [--json]|login openwebui [ORIGIN] [--allow-insecure-http]|logout openwebui|login antigravity-oauth|enable ID|disable ID|generic ...]",
     );
   }
   if (command === "enable" && !configured(provider)) {
     const keySetup = `run \`${targetCli(`provider-key ${provider.id} set`)}\``;
-    const setup = provider.kind === "oauth"
+    const setup = provider.kind === "oauth" || provider.authProfile === "openwebui-session"
       ? SIGN_IN_STATUS[provider.id]?.setup || "sign in with the provider CLI"
       : keySetup;
     throw new Error(`${provider.displayName} is not configured; ${setup} first.`);

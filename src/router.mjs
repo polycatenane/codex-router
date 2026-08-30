@@ -2270,12 +2270,43 @@ function compactionAttempts(route, aged, { allowFailover = true } = {}) {
   return providerCooldown(route.provider) ? candidates : [route, ...candidates];
 }
 
+// Compaction deliberately disables new tool use (`tools: []` below), but the
+// Responses -> Chat bridge still translates historical tool calls and results
+// into provider-native tool blocks. Open WebUI may route an opaque model id to
+// Bedrock, whose Converse API rejects those blocks without a toolConfig. The
+// bounded C/R records prepared above are the compaction-safe representation of
+// that evidence, so do not send a second tool-protocol copy to Open WebUI.
+//
+// Scope this to the Open WebUI auth profile rather than guessing an upstream
+// from an account-scoped model id. Other providers retain their exact existing
+// history behavior.
+const OPENWEBUI_COMPACTION_TOOL_ITEMS = new Set([
+  "function_call",
+  "function_call_output",
+  "custom_tool_call",
+  "custom_tool_call_output",
+  "local_shell_call",
+  "local_shell_call_output",
+  "computer_call",
+  "computer_call_output",
+  "tool_search_call",
+  "tool_search_output",
+  "web_search_call",
+]);
+
+function compactionProviderInput(input, route) {
+  if (providerForModel(route)?.authProfile !== "openwebui-session" || !Array.isArray(input)) {
+    return input;
+  }
+  return input.filter((item) => !OPENWEBUI_COMPACTION_TOOL_ITEMS.has(item?.type));
+}
+
 // One compaction attempt against one model. Everything route-dependent lives
 // here so a compaction can be moved to another model exactly like an ordinary
 // turn -- a compaction that fails ends the session just as hard, because the
 // conversation cannot get under its context limit without one.
 async function summarizeWith(request, payload, route, aged, prepared, signal) {
-  const compatibleInput = zenFreeCompatibleInput(aged.input, route);
+  const compatibleInput = zenFreeCompatibleInput(compactionProviderInput(aged.input, route), route);
   const providerInput = needsConsoleGoResponsesToolCompatibility(route)
     ? strictOpenCodeCompactionInput(compatibleInput, payload.tools, {
         maxNameLength: 64,
@@ -2800,6 +2831,9 @@ async function buildRoutedRequest({ request, payload, route, agedInput, tokenMax
     const flattened = chatProviderToolSurface(tools, provider?.id, {
       input,
       toolChoice: payload.tool_choice,
+      ...(provider?.authProfile === "openwebui-session" && route.openWebUiToolNameLimit === 64
+        ? { maxNameLength: 64 }
+        : {}),
     });
     namespacesFlattened = flattened.flattened;
     flattenedNamespaces = flattened.namespaces;

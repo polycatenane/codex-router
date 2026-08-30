@@ -101,7 +101,13 @@ export function userModelPublicId(providerId, upstreamId, metadata) {
 
 export function userModelIdentity({ providerId, upstreamId, metadata }) {
   const publicId = userModelPublicId(providerId, upstreamId, metadata);
-  const gatewayModel = `${gatewaySafe(providerId)}-${gatewaySafe(publicId)}`;
+  // Open WebUI ids are account-scoped opaque strings. Lossy slugging would
+  // turn `a/b`, `a:b`, Unicode, or spaces into collisions, so retain the
+  // public id exactly and use reversible UTF-8 base64url only on LiteLLM's
+  // internal gateway identifier.
+  const gatewayModel = providerId === "openwebui"
+    ? `openwebui--${Buffer.from(String(publicId), "utf8").toString("base64url")}`
+    : `${gatewaySafe(providerId)}-${gatewaySafe(publicId)}`;
   return {
     slug: `${providerId}/${publicId}`,
     gatewayModel,
@@ -117,7 +123,16 @@ export function defaultUserModelDescription(providerId) {
   return `User-curated ${providerId} model; conservative default metadata that can be edited in the user model file.`;
 }
 
-export function userModelEntry({ providerId, upstreamId, requestProfile, priority, metadata }) {
+export function userModelEntry({
+  providerId,
+  upstreamId,
+  requestProfile,
+  priority,
+  metadata,
+  openWebUiProtocol,
+  openWebUiWebSearchOptions,
+  openWebUiToolNameLimit,
+}) {
   const identity = userModelIdentity({ providerId, upstreamId, metadata });
   const entry = {
     ...identity,
@@ -136,6 +151,9 @@ export function userModelEntry({ providerId, upstreamId, requestProfile, priorit
     if (METADATA_FIELDS.has(key)) entry[key] = value;
   }
   if (requestProfile) entry.requestProfile = requestProfile;
+  if (openWebUiProtocol) entry.openWebUiProtocol = openWebUiProtocol;
+  if (openWebUiWebSearchOptions) entry.openWebUiWebSearchOptions = openWebUiWebSearchOptions;
+  if (openWebUiToolNameLimit) entry.openWebUiToolNameLimit = openWebUiToolNameLimit;
   return entry;
 }
 

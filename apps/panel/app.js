@@ -677,7 +677,7 @@ function startPanel() {
           : t("connections.addCredential", { credential: credentialLabel });
     }
     if (isBusy) detail = t("status.working");
-    const canRemove = provider.kind === "api" && provider.configured;
+    const canRemove = (provider.kind === "api" || provider.disconnectable) && provider.configured;
     const actionButton = isAnonymous
       ? `<button class="mini-button" type="button" disabled title="${escapeHtml(provider.anonymousNote || t("connections.noApiKey"))}">${escapeHtml(actionLabel)}</button>`
       : `<button class="mini-button" type="button" data-command="${action === "connect" ? "connect_oauth" : "save_api_key"}" data-action="${action}" data-provider="${escapeHtml(provider.id)}"${isBusy ? " disabled" : ""}>${escapeHtml(actionLabel)}</button>`;
@@ -1732,7 +1732,11 @@ function startPanel() {
         // Leaving the user at an "installed" state made the Windows tray
         // differ from the native Mac companion and invited duplicate clicks.
         if (!setup?.cliInstalled) await call("install_provider_cli", { provider });
-        await call("connect_oauth", { provider });
+        const origin = provider === "openwebui"
+          ? window.prompt("Open WebUI URL (for example https://chat.example.com)")
+          : undefined;
+        if (provider === "openwebui" && !origin) return;
+        await call("connect_oauth", { provider, origin });
         showToast(t("connections.providerConnected"));
       }
       await refreshPanel({ quiet: true });

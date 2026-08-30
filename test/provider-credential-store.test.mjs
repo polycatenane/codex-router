@@ -174,21 +174,25 @@ test("credential metadata parsing fails closed for unknown or secret-bearing fie
 test("redaction covers headers, URLs, errors, nested objects, and known secrets", () => {
   const text = [
     "Authorization: Bearer TEST_BEARER_TOKEN",
+    "Cookie: token=TEST_COOKIE_TOKEN; session=TEST_SESSION_TOKEN",
     "X-Api-Key: TEST_HEADER_KEY",
     "https://user:password@example.test/v1?api_key=QUERY_SECRET",
     "{\"access_token\":\"JSON_SECRET\",\"message\":\"TEST_KNOWN_SECRET\"}",
     "sk-test_secret_value",
+    "aaa.bbb.ccc",
   ].join(" ");
   const redacted = redactCredentialText(text, ["TEST_KNOWN_SECRET"]);
-  assert.doesNotMatch(redacted, /TEST_BEARER_TOKEN|TEST_HEADER_KEY|password|QUERY_SECRET|JSON_SECRET|TEST_KNOWN_SECRET|sk-test_secret_value/);
+  assert.doesNotMatch(redacted, /TEST_BEARER_TOKEN|TEST_COOKIE_TOKEN|TEST_SESSION_TOKEN|TEST_HEADER_KEY|password|QUERY_SECRET|JSON_SECRET|TEST_KNOWN_SECRET|sk-test_secret_value|aaa\.bbb\.ccc/);
   const object = redactCredentialObject({
     headers: { Authorization: "Bearer TEST_HEADER_SECRET", "X-Api-Key": "TEST_API_SECRET" },
     nested: { refreshToken: "TEST_REFRESH_SECRET", message: "TEST_KNOWN_SECRET" },
+    storageState: { cookies: [{ name: "token", value: "TEST_PLAYWRIGHT_TOKEN" }] },
   }, ["TEST_KNOWN_SECRET"]);
   assert.equal(object.headers.Authorization, "[REDACTED]");
   assert.equal(object.headers["X-Api-Key"], "[REDACTED]");
   assert.equal(object.nested.refreshToken, "[REDACTED]");
   assert.equal(object.nested.message, "[REDACTED]");
+  assert.equal(object.storageState, "[REDACTED]");
 });
 
 test("migration discovers configured provider files without copying secret bytes", () => {

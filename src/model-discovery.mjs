@@ -34,6 +34,11 @@ import {
   ensureFreshGitHubCopilotSession,
   githubCopilotCatalogHeaders,
 } from "./github-copilot-session.mjs";
+import {
+  openWebUiApiUrl,
+  openWebUiSessionStatus,
+  validateOpenWebUiSession,
+} from "./openwebui-session.mjs";
 
 function option(name) {
   const index = process.argv.indexOf(name);
@@ -217,6 +222,11 @@ export function modelContextLengths(payload, provider) {
 }
 
 async function providerDiscoveryIdentity(provider) {
+  if (provider.authProfile === "openwebui-session") {
+    const session = openWebUiSessionStatus();
+    if (!session.configured) throw new Error("Run ./bin/model-router codex providers login openwebui");
+    return { kind: "openwebui", credential: session.credential, baseUrl: session.baseUrl };
+  }
   if (provider.id === "devin-cli") {
     const { readDevinSession } = await import("./devin-cli-session.mjs");
     return { kind: "devin", session: readDevinSession() };
@@ -236,6 +246,7 @@ function sameProviderDiscoveryIdentity(left, right) {
 }
 
 function discoveryEndpoint(identity) {
+  if (identity?.kind === "openwebui") return openWebUiApiUrl(identity.baseUrl, "api/models").toString();
   const baseUrl = identity?.baseUrl || identity?.session?.apiServerUrl;
   return typeof baseUrl === "string" && baseUrl.trim() ? `${baseUrl.replace(/\/+$/, "")}/models` : undefined;
 }
@@ -253,7 +264,7 @@ export function providerDiscoveryIdentityFingerprint(identity) {
     ]);
   }
   return providerCatalogIdentityFingerprint([
-    "api",
+    identity.kind || "api",
     identity.baseUrl,
     identity.credential?.value,
   ]);
@@ -288,6 +299,20 @@ async function providerPayload(provider, identity) {
         owned_by: "devin",
       })),
     };
+  }
+  if (provider.authProfile === "openwebui-session") {
+    const session = await validateOpenWebUiSession({
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(30_000),
+    });
+    try {
+      const payload = await session.response.json();
+      validateModelCatalogPayload(payload);
+      return payload;
+    } catch (error) {
+      if (error?.code) throw error;
+      throw new Error("Open WebUI returned an invalid model list.");
+    }
   }
   const credential = identity?.credential || resolveProviderCredential(provider);
   if (!credential) throw new Error(credentialStatus(provider).setup);

@@ -38,7 +38,7 @@ export const SECRET_REFERENCE_TYPES = Object.freeze([
   "environment",
 ]);
 
-const SENSITIVE_KEY = /(?:authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password|cookie|credential|private[-_]?key|signed[-_]?url)/i;
+const SENSITIVE_KEY = /(?:authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password|cookie|credential|storage[-_]?state|private[-_]?key|signed[-_]?url)/i;
 const CREDENTIAL_ID = /^cred_[A-Za-z0-9_-]{16,64}$/;
 const LABEL_LIMIT = 160;
 const STORE_KEYS = new Set(["schemaVersion", "credentials"]);
@@ -597,11 +597,13 @@ function redactString(value) {
   let result = String(value ?? "");
   result = result
     .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s"'&,}]+/gi, "$1[REDACTED]")
+    .replace(/((?:cookie|set-cookie)\s*:\s*)[^\r\n]+/gi, "$1[REDACTED]")
     .replace(/((?:x[-_]?api[-_]?key|api[_-]?key|access[-_]?token|refresh[-_]?token|token|key)\s*[:=]\s*(?:bearer\s+)?)[^\s"'&,}]+/gi, "$1[REDACTED]")
     .replace(/([?&](?:x[-_]?api[-_]?key|api[_-]?key|access[-_]?token|refresh[-_]?token|token|key)=)[^&#\s]+/gi, "$1[REDACTED]")
     .replace(/((?:["']?(?:x[-_]?api[-_]?key|api[_-]?key|access[-_]?token|refresh[-_]?token|token|secret)["']?)\s*[:=]\s*["']?)([^\s"',}]+)/gi, "$1[REDACTED]")
     .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[REDACTED]@[REDACTED]")
-    .replace(/\b(?:sk|ghp|gho|github_pat)-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED_KEY]");
+    .replace(/\b(?:sk|ghp|gho|github_pat)-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED_KEY]")
+    .replace(/\b[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}\b/g, "[REDACTED JWT]");
   return result;
 }
 

@@ -6062,6 +6062,253 @@ function curatedFireworksModel() {
   return { dir, file, gatewayModel: "fireworks-test-model" };
 }
 
+function curatedOpenWebUiModel(stateDir, baseUrl, compatibility = {}) {
+  const file = path.join(stateDir, "user-models.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      version: 1,
+      models: [{
+        slug: "openwebui/test-model",
+        gatewayModel: "openwebui--dGVzdC1tb2RlbA",
+        upstreamModel: "test-model",
+        provider: "openwebui",
+        listed: true,
+        displayName: "Open WebUI Test Model",
+        description: "Test fixture.",
+        priority: 500,
+        defaultEffort: "high",
+        reasoningLevels: [{ effort: "high", description: "Adaptive reasoning" }],
+        contextWindow: 131072,
+        autoCompact: 110000,
+        inputModalities: ["text"],
+        compHash: "openwebui-test-model-user-v1",
+        openWebUiProtocol: "chat",
+        ...compatibility,
+      }],
+    }),
+    "utf8",
+  );
+  writeFileSync(
+    path.join(stateDir, "openwebui-origin.json"),
+    `${JSON.stringify({ version: 1, baseUrl })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(path.join(stateDir, "openwebui-session.secret"), "header.payload.signature\n", {
+    mode: 0o600,
+  });
+  return { file, gatewayModel: "openwebui--dGVzdC1tb2RlbA" };
+}
+
+test("API forwarder honors an Open WebUI model's web-search-options setting", async () => {
+  for (const { protocol, route, apiPath, responseBody } of [
+    {
+      protocol: "chat",
+      route: "/v1/chat/completions",
+      apiPath: "/api/chat/completions",
+      responseBody: { choices: [] },
+    },
+    {
+      protocol: "messages",
+      route: "/v1/messages",
+      apiPath: "/api/v1/messages",
+      responseBody: { id: "msg_test", type: "message", content: [] },
+    },
+  ]) {
+    const upstreamRequests = [];
+    const upstream = await mockServer(async (request, response) => {
+      if (request.url === "/api/models") {
+        json(response, 200, { object: "list", data: [] });
+        return;
+      }
+      assert.equal(request.url, apiPath);
+      upstreamRequests.push(await bodyJson(request));
+      json(response, 200, responseBody);
+    });
+    const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-openwebui-model-"));
+    const curated = curatedOpenWebUiModel(
+      stateDir,
+      `http://127.0.0.1:${upstream.port}`,
+      { openWebUiProtocol: protocol, openWebUiWebSearchOptions: "drop" },
+    );
+    const forwarderPort = await openPort();
+    const forwarder = run("api-forwarder.mjs", {
+      CODEX_ROUTER_API_PORT: String(forwarderPort),
+      MODEL_ROUTER_STATE_DIR: stateDir,
+      MODEL_ROUTER_USER_MODELS: curated.file,
+      CODEX_ROUTER_QUIET: "1",
+    });
+
+    try {
+      await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+      });
+      const response = await fetch(`http://127.0.0.1:${forwarderPort}${route}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: curated.gatewayModel,
+          web_search_options: { search_context_size: "medium" },
+          messages: [{ role: "user", content: "test" }],
+        }),
+      });
+      assert.equal(response.status, 200, forwarder.testErrors());
+      assert.equal(upstreamRequests.length, 1);
+      assert.equal(upstreamRequests[0].web_search_options, undefined);
+      assert.equal(upstreamRequests[0].model, "test-model");
+    } finally {
+      await stopChild(forwarder);
+      await closeServer(upstream.server);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("API forwarder preserves web_search_options for legacy Open WebUI curation", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    if (request.url === "/api/models") {
+      json(response, 200, { object: "list", data: [] });
+      return;
+    }
+    upstreamRequests.push(await bodyJson(request));
+    json(response, 200, { choices: [] });
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-openwebui-legacy-"));
+  const curated = curatedOpenWebUiModel(stateDir, `http://127.0.0.1:${upstream.port}`);
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: curated.gatewayModel,
+        web_search_options: { search_context_size: "medium" },
+        messages: [{ role: "user", content: "test" }],
+      }),
+    });
+    assert.equal(response.status, 200, forwarder.testErrors());
+    assert.deepEqual(upstreamRequests[0].web_search_options, { search_context_size: "medium" });
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("Open WebUI compaction keeps tool evidence out of the provider tool protocol", async () => {
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, {
+      id: "resp_openwebui_compaction",
+      object: "response",
+      output: [{
+        type: "message",
+        content: [{ type: "output_text", text: "compact summary" }],
+      }],
+    });
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-openwebui-compaction-"));
+  const curated = curatedOpenWebUiModel(stateDir, `http://127.0.0.1:${gateway.port}`);
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const headers = {
+    Authorization: `Bearer ${CALLER_KEY}`,
+    "Content-Type": "application/json",
+  };
+  const input = [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "capture the repository state" }],
+    },
+    {
+      type: "function_call",
+      call_id: "call_exec",
+      name: "exec_command",
+      arguments: '{"cmd":"git status"}',
+    },
+    {
+      type: "function_call_output",
+      call_id: "call_exec",
+      output: '{"exit_code":0,"output":"clean"}',
+    },
+    {
+      type: "custom_tool_call",
+      call_id: "call_patch",
+      name: "apply_patch",
+      input: "*** Begin Patch\n*** End Patch",
+    },
+    {
+      type: "custom_tool_call_output",
+      call_id: "call_patch",
+      output: "Done!",
+    },
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    for (const [endpoint, requestInput] of [
+      ["/responses/compact", input],
+      ["/responses", [...input, { type: "compaction_trigger" }]],
+    ]) {
+      const response = await fetch(`${routerBase(routerPort)}${endpoint}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model: "openwebui/test-model", input: requestInput }),
+      });
+      assert.equal(response.status, 200, router.testErrors());
+    }
+
+    assert.equal(gatewayRequests.length, 2);
+    for (const request of gatewayRequests) {
+      assert.deepEqual(request.tools, []);
+      assert.equal(request.tool_choice, undefined);
+      assert.ok(
+        request.input.every((item) => ![
+          "function_call",
+          "function_call_output",
+          "custom_tool_call",
+          "custom_tool_call_output",
+        ].includes(item?.type)),
+      );
+      const catalog = request.input.at(-2)?.content?.[0]?.text;
+      assert.match(catalog, /ROUTER SOURCE CATALOG/);
+      assert.match(catalog, /"C001"/);
+      assert.match(catalog, /"R001"/);
+      assert.match(catalog, /"tool":"exec_command"/);
+      assert.match(catalog, /"outcome":"exit_0"/);
+    }
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("API forwarder strips web_search_options for Fireworks", async () => {
   const upstreamRequests = [];
   const upstream = await mockServer(async (request, response) => {

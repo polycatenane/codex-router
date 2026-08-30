@@ -66,6 +66,22 @@ const requestProfileOption = (() => {
   const index = process.argv.indexOf("--request-profile");
   return index === -1 ? undefined : process.argv[index + 1];
 })();
+const openWebUiProtocolOption = (() => {
+  const index = process.argv.indexOf("--protocol");
+  return index === -1 ? undefined : process.argv[index + 1];
+})();
+const openWebUiConfigureModelOption = (() => {
+  const index = process.argv.indexOf("--configure-model");
+  return index === -1 ? undefined : process.argv[index + 1];
+})();
+const openWebUiWebSearchOptionsOption = (() => {
+  const index = process.argv.indexOf("--web-search-options");
+  return index === -1 ? undefined : process.argv[index + 1];
+})();
+const openWebUiToolNameLimitOption = (() => {
+  const index = process.argv.indexOf("--tool-name-limit");
+  return index === -1 ? undefined : process.argv[index + 1];
+})();
 
 // The Codex effort ladder. Registry models describe each level explicitly;
 // curated models reuse these standard descriptions. Only advertise levels the
@@ -124,6 +140,11 @@ function usage() {
     "Usage: curate-models.mjs PROVIDER [--models id1,id2 | interactive] " +
       "[--free-only] [--remove id1,id2] [--refresh] [--apply|--no-apply] " +
       "[--efforts minimal,low,medium,high,xhigh] " +
+      "[--protocol chat|messages] " +
+      "[--web-search-options forward|drop] [--tool-name-limit 64] " +
+      "[--configure-model RAW_MODEL_ID --protocol chat|messages] " +
+      "[--configure-model RAW_MODEL_ID --web-search-options forward|drop] " +
+      "[--configure-model RAW_MODEL_ID --tool-name-limit 64|none] " +
       `[--request-profile ${Object.keys(REQUEST_PROFILE_DESCRIPTIONS).join("|")}]`,
   );
   process.exit(2);
@@ -329,18 +350,72 @@ const flagRequestProfile = (() => {
     process.exit(2);
   }
 })();
+const openWebUiProtocol = (() => {
+  if (openWebUiProtocolOption === undefined) return undefined;
+  const protocol = String(openWebUiProtocolOption).trim().toLowerCase();
+  if (!["chat", "messages"].includes(protocol)) {
+    console.error("--protocol must be chat or messages.");
+    process.exit(2);
+  }
+  return protocol;
+})();
+const openWebUiWebSearchOptions = (() => {
+  if (openWebUiWebSearchOptionsOption === undefined) return undefined;
+  const value = String(openWebUiWebSearchOptionsOption).trim().toLowerCase();
+  if (!['forward', 'drop'].includes(value)) {
+    console.error("--web-search-options must be forward or drop.");
+    process.exit(2);
+  }
+  return value;
+})();
+const openWebUiToolNameLimit = (() => {
+  if (openWebUiToolNameLimitOption === undefined) return undefined;
+  const value = String(openWebUiToolNameLimitOption).trim().toLowerCase();
+  if (value === "none") return undefined;
+  if (value !== "64") {
+    console.error("--tool-name-limit must be 64 or none.");
+    process.exit(2);
+  }
+  return 64;
+})();
 
-export function renderRows(candidates, curated, selected) {
+export function updateOpenWebUiCompatibility(model, {
+  protocol,
+  webSearchOptions,
+  toolNameLimit,
+  toolNameLimitSpecified,
+}) {
+  let next = model;
+  if (protocol !== undefined) {
+    next = { ...next, openWebUiProtocol: protocol };
+  }
+  if (webSearchOptions !== undefined) {
+    next = { ...next, openWebUiWebSearchOptions: webSearchOptions };
+  }
+  if (toolNameLimitSpecified) {
+    if (toolNameLimit === undefined) {
+      const { openWebUiToolNameLimit: _removed, ...withoutLimit } = next;
+      next = withoutLimit;
+    } else {
+      next = { ...next, openWebUiToolNameLimit: toolNameLimit };
+    }
+  }
+  return next;
+}
+
+export function renderRows(candidates, curated, selected, available = new Set(candidates)) {
   return candidates
     .map((id, index) => {
       const mark = selected.has(index + 1) ? "[x]" : "[ ]";
-      const note = curated.has(id) ? "currently curated" : "new";
+      const note = curated.has(id)
+        ? available.has(id) ? "currently curated" : "currently curated — unavailable on server"
+        : "new";
       return `  ${mark} ${index + 1}. ${id} (${note})`;
     })
     .join("\n");
 }
 
-function chooseInteractively(candidates, curated) {
+function chooseInteractively(candidates, curated, available) {
   let selected = new Set(
     candidates.map((id, index) => (curated.has(id) ? index + 1 : undefined)).filter(Boolean),
   );
@@ -350,7 +425,7 @@ function chooseInteractively(candidates, curated) {
       "and reasoning efforts; every value stays editable later.\n",
   );
   for (;;) {
-    process.stdout.write(`${renderRows(candidates, curated, selected)}\n`);
+    process.stdout.write(`${renderRows(candidates, curated, selected, available)}\n`);
     const raw = promptLine("Toggle numbers (comma-separated), a=all, n=none; Enter to continue");
     const result = toggleSelection(selected, raw, candidates.length, { allowEmpty: true });
     selected = result.selected;
@@ -373,6 +448,73 @@ async function main() {
   const storedMine = existing.filter((model) => familyProviders.has(model.provider));
   const mine = normalizeCurationModels(storedMine, providerId);
   const curated = new Set(mine.map((model) => model.upstreamModel));
+  if (openWebUiConfigureModelOption !== undefined) {
+    if (provider.authProfile !== "openwebui-session") {
+      throw new Error("--configure-model is supported only for Open WebUI.");
+    }
+    const modelId = String(openWebUiConfigureModelOption || "").trim();
+    if (!modelId || modelId.startsWith("--")) {
+      throw new Error("--configure-model requires one existing raw Open WebUI model id.");
+    }
+    if (
+      openWebUiProtocol === undefined &&
+      openWebUiWebSearchOptions === undefined &&
+      openWebUiToolNameLimitOption === undefined
+    ) {
+      throw new Error("--configure-model requires --protocol, --web-search-options, or --tool-name-limit.");
+    }
+    const incompatible = [
+      ["--models", modelsOption],
+      ["--remove", removeOption],
+      ["--free-only", freeOnly],
+      ["--refresh", refreshCatalog],
+      ["--efforts", effortsOption],
+      ["--request-profile", requestProfileOption],
+    ].find(([, value]) => value !== undefined && value !== false);
+    if (incompatible) {
+      throw new Error(`--configure-model cannot be combined with ${incompatible[0]}.`);
+    }
+    const matches = mine.filter((model) => model.upstreamModel === modelId);
+    if (matches.length !== 1) {
+      throw new Error(
+        `${modelId} is not one curated Open WebUI model. Curated: ${[...curated].join(", ") || "none"}`,
+      );
+    }
+    const nextMine = mine.map((model) => model.upstreamModel === modelId
+      ? updateOpenWebUiCompatibility(model, {
+          protocol: openWebUiProtocol,
+          webSearchOptions: openWebUiWebSearchOptions,
+          toolNameLimit: openWebUiToolNameLimit,
+          toolNameLimitSpecified: openWebUiToolNameLimitOption !== undefined,
+        })
+      : model);
+    const wantsApply = !noApply && (
+      apply || confirm("Apply now? This rebuilds gateway routes and restarts the background service.")
+    );
+    let target;
+    await transactModelOverlayMutation({
+      files: [USER_MODELS_PATH, MODEL_PICKER_STATE_PATH],
+      mutate: () => {
+        target = writeUserModels(mergeCurationIntoCurrent(readUserModels(), {
+          providerId,
+          providerIds: familyProviderIds,
+          expectedMine: storedMine,
+          nextMine,
+        }));
+      },
+      restart: wantsApply,
+      applyPublication: async (options) => (
+        wantsApply ? applyModelOverlayPublication(options) : {}
+      ),
+    });
+    process.stdout.write(`Updated Open WebUI compatibility for ${modelId} in ${target}.\n`);
+    if (noApply || !wantsApply) {
+      process.stdout.write("Run ./bin/install to regenerate routes and the picker catalog.\n");
+    } else {
+      process.stdout.write("Curated models are live. Fully quit and reopen the app to refresh its picker.\n");
+    }
+    return;
+  }
   if (modelsOption !== undefined && removeOption !== undefined) {
     throw new Error("Use --models to add models or --remove to prune them, not both.");
   }
@@ -381,6 +523,16 @@ async function main() {
   }
   if (modelsOption !== undefined && (!modelsOption.trim() || modelsOption.startsWith("--"))) {
     throw new Error("--models requires at least one model id.");
+  }
+  if (provider.authProfile === "openwebui-session" && modelsOption !== undefined && !openWebUiProtocol) {
+    throw new Error("Open WebUI scripted curation requires --protocol chat or --protocol messages.");
+  }
+  if (
+    provider.authProfile === "openwebui-session" &&
+    modelsOption !== undefined &&
+    openWebUiWebSearchOptions === undefined
+  ) {
+    throw new Error("Open WebUI scripted curation requires --web-search-options forward or drop.");
   }
   if (removeOption !== undefined && (!removeOption.trim() || removeOption.startsWith("--"))) {
     throw new Error("--remove requires at least one model id.");
@@ -437,7 +589,7 @@ async function main() {
     : freeOnly
       ? freeCandidates
     : interactiveSelection
-      ? chooseInteractively(candidates, curated)
+      ? chooseInteractively(candidates, curated, new Set([...(discovery.addable || discovery.unregistered)]))
       : [];
   if (removeOption === undefined) {
     for (const id of chosen) {
@@ -552,6 +704,30 @@ async function main() {
       ? AUTO_TOOL_CHOICE
       : undefined;
   };
+  const protocolFor = (id) => {
+    if (provider.authProfile !== "openwebui-session") return undefined;
+    if (openWebUiProtocol) return openWebUiProtocol;
+    if (!interactive) throw new Error("Open WebUI curation requires --protocol chat or messages.");
+    const answer = promptLine(`  Protocol for ${id}: chat or messages`).trim().toLowerCase();
+    if (!["chat", "messages"].includes(answer)) {
+      throw new Error("Open WebUI protocol must be chat or messages.");
+    }
+    return answer;
+  };
+  const webSearchOptionsFor = (id) => {
+    if (provider.authProfile !== "openwebui-session") return undefined;
+    if (openWebUiWebSearchOptions) return openWebUiWebSearchOptions;
+    if (!interactive) throw new Error("Open WebUI curation requires --web-search-options forward or drop.");
+    return confirm(`  Forward web_search_options for ${id}?`, true) ? "forward" : "drop";
+  };
+  const toolNameLimitFor = (id) => {
+    if (provider.authProfile !== "openwebui-session") return undefined;
+    if (openWebUiToolNameLimitOption !== undefined) return openWebUiToolNameLimit;
+    if (!interactive) return undefined;
+    return confirm(`  Does ${id} require function tool names capped at 64 characters?`, false)
+      ? 64
+      : undefined;
+  };
 
   // Older builds included OrcaRouter's moving free meta-router. A free-only
   // refresh replaces it with the concrete free models the live catalog names,
@@ -576,6 +752,9 @@ async function main() {
         providerId: routedProviderId,
         upstreamId: id,
         requestProfile: requestProfileFor(id),
+        openWebUiProtocol: protocolFor(id),
+        openWebUiWebSearchOptions: webSearchOptionsFor(id),
+        openWebUiToolNameLimit: toolNameLimitFor(id),
         priority: 100 + mine.length + index,
         metadata,
       });

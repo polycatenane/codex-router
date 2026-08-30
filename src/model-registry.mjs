@@ -202,9 +202,15 @@ function loadRegistry() {
     }
     if (
       provider.authProfile !== undefined &&
-      !["github-copilot"].includes(provider.authProfile)
+      !["github-copilot", "openwebui-session"].includes(provider.authProfile)
     ) {
       fail(`provider ${provider.id} has an unsupported auth profile`);
+    }
+    if (
+      provider.authProfile === "openwebui-session" &&
+      (provider.id !== "openwebui" || provider.kind !== "openai-compatible")
+    ) {
+      fail("the Open WebUI session auth profile requires the openwebui provider");
     }
     if (
       provider.authProfile === "github-copilot" &&
@@ -559,6 +565,30 @@ function modelProblem(model, providers, slugs, gatewayModels) {
   }
   if (provider.authMode === "anonymous" && !anonymousModelAllowed(provider, model.upstreamModel)) {
     return `anonymous provider ${provider.id} only accepts its documented free-model ids`;
+  }
+  if (provider.authProfile === "openwebui-session") {
+    if (!['chat', 'messages'].includes(model.openWebUiProtocol)) {
+      return `Open WebUI model ${model.slug} requires an explicit chat or messages protocol`;
+    }
+    if (
+      model.openWebUiWebSearchOptions !== undefined &&
+      !["forward", "drop"].includes(model.openWebUiWebSearchOptions)
+    ) {
+      return `Open WebUI model ${model.slug} has an invalid web-search-options setting`;
+    }
+    if (
+      model.openWebUiToolNameLimit !== undefined &&
+      model.openWebUiToolNameLimit !== 64
+    ) {
+      return `Open WebUI model ${model.slug} has an invalid tool-name limit`;
+    }
+  } else if (model.openWebUiProtocol !== undefined) {
+    return `model ${model.slug} has Open WebUI protocol metadata outside Open WebUI`;
+  } else if (
+    model.openWebUiWebSearchOptions !== undefined ||
+    model.openWebUiToolNameLimit !== undefined
+  ) {
+    return `model ${model.slug} has Open WebUI compatibility metadata outside Open WebUI`;
   }
   const endpoint = endpointProblem(model, provider);
   if (endpoint) return endpoint;

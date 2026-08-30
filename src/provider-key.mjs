@@ -27,6 +27,10 @@ if (!providerId || !new Set(["status", "set", "remove"]).has(command)) {
 }
 
 const provider = apiProvider(providerId);
+if (provider.authProfile === "openwebui-session") {
+  console.error("Open WebUI uses a browser SSO session. Run ./bin/model-router codex providers login openwebui (or logout openwebui).");
+  process.exit(2);
+}
 const credentialType = credentialLabel(provider);
 const credentialNoun = credentialType === "API key" ? "key" : credentialType.toLowerCase();
 

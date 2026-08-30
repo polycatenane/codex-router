@@ -40,6 +40,20 @@ test("userModelEntry fills conservative picker metadata", () => {
   assert.ok(entry.description.length > 0);
 });
 
+test("Open WebUI curation stores explicit compatibility controls", () => {
+  const entry = userModelEntry({
+    providerId: "openwebui",
+    upstreamId: "bedrock-claude-5-opus",
+    priority: 100,
+    openWebUiProtocol: "messages",
+    openWebUiWebSearchOptions: "drop",
+    openWebUiToolNameLimit: 64,
+  });
+  assert.equal(entry.openWebUiProtocol, "messages");
+  assert.equal(entry.openWebUiWebSearchOptions, "drop");
+  assert.equal(entry.openWebUiToolNameLimit, 64);
+});
+
 
 test("curation metadata can set sizing and the effort ladder", () => {
   const entry = userModelEntry({

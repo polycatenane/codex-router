@@ -677,9 +677,9 @@ async function installProviderCli(providerId) {
   process.stdout.write(`${JSON.stringify(providerOnboardingSnapshot())}\n`);
 }
 
-async function loginProvider(providerId) {
+async function loginProvider(providerId, origin) {
   const { loginOauthProvider, providerOnboardingSnapshot } = await import("./provider-onboarding.mjs");
-  await loginOauthProvider(providerId);
+  await loginOauthProvider(providerId, { origin });
   process.stdout.write(`${JSON.stringify(providerOnboardingSnapshot())}\n`);
 }
 
@@ -2914,7 +2914,7 @@ if (args.includes("--probe")) {
   await installProviderCli(args[1]);
 } else if (args[0] === "login") {
   if (!args[1]) throw new Error("Usage: control login <oauth-provider>");
-  await loginProvider(args[1]);
+  await loginProvider(args[1], args[2]);
 } else if (args[0] === "catalog-cache") {
   if (args[1] !== "invalidate" || !args[2]) {
     throw new Error("Usage: control catalog-cache invalidate <provider>");

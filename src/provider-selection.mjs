@@ -101,6 +101,11 @@ export function configuredProviderIds() {
   for (const provider of RUNTIME_PROVIDERS.values()) {
     if (provider.generic === true) {
       if (genericProviderConfigured(provider.id)) configured.push(provider.id);
+    } else if (provider.authProfile === "openwebui-session") {
+      if (effectiveProviderCredentialStatus(provider, {
+        persistent: true,
+        poolAuthoritySnapshot,
+      }).configured) configured.push(provider.id);
     } else if (provider.kind === "oauth") {
       if (provider.id === "kimi-oauth" && kimiOAuthStatus().configured) {
         configured.push(provider.id);

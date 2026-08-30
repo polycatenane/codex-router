@@ -134,6 +134,10 @@ export const NATIVE_SESSION_CONSENT_PATH = path.join(
 // cache for the curation surfaces, never an authority: what is registered
 // locally is always recomputed from the live registry.
 export const PROVIDER_CATALOG_CACHE_PATH = path.join(STATE_DIR, "provider-catalog-cache.json");
+// Open WebUI keeps its public base separate from the bearer credential. The
+// base is not a secret, but this is still private router state so a support
+// bundle never turns an internal deployment address into diagnostics output.
+export const OPENWEBUI_ORIGIN_PATH = path.join(STATE_DIR, "openwebui-origin.json");
 export const PROVIDER_API_KEY_POOL_PATH =
   process.env.MODEL_ROUTER_API_KEY_POOL_PATH ||
   path.join(STATE_DIR, "provider-api-key-pools.json");

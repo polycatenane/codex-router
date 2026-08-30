@@ -6,6 +6,7 @@ import path from "node:path";
 import { detectLegacyInstallations, applyKnownMigrations, rollbackLatestMigration } from "./legacy-migration.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { antigravityOAuthStatus } from "./antigravity-oauth-status.mjs";
+import { openWebUiSessionStatus } from "./openwebui-session.mjs";
 import { LISTED_MODELS, PROVIDERS, providerNeedsNoKey } from "./model-registry.mjs";
 import { ensureNodeDependencies, isNodeDependencyFailure } from "./node-dependency-install.mjs";
 import { effectiveVisibleModels, setModelSelection } from "./model-picker-state.mjs";
@@ -211,6 +212,7 @@ function confirm(label, defaultYes = true) {
 }
 
 function providerConfigured(provider) {
+  if (provider.authProfile === "openwebui-session") return openWebUiSessionStatus().configured;
   if (provider.kind === "oauth") {
     if (provider.id === "kimi-oauth") return kimiOAuthStatus().configured;
     if (provider.id === "grok-oauth") return grokOAuthStatus().configured;
@@ -320,6 +322,9 @@ function run(command, commandArgs, options = {}) {
 }
 
 function oauthSetupHint(provider) {
+  if (provider.authProfile === "openwebui-session") {
+    return "run `./bin/providers login openwebui https://chat.example.com`";
+  }
   if (provider.id === "grok-oauth") return "run `grok login --oauth`";
   if (provider.id === "antigravity-oauth") {
     const command = process.platform === "win32"
@@ -334,12 +339,21 @@ async function configureProvider(provider) {
   if (providerConfigured(provider)) return;
   if (!guided) {
     const setup =
-      provider.kind === "oauth"
+      provider.kind === "oauth" || provider.authProfile === "openwebui-session"
         ? oauthSetupHint(provider)
         : `run \`./bin/provider-key ${provider.id} set\``;
     throw incomplete(`${provider.displayName} is selected but not configured; ${setup} first.`);
   }
-  if (provider.kind === "oauth") {
+  if (provider.authProfile === "openwebui-session") {
+    if (!confirm(`Open a browser to sign in to ${provider.displayName} now?`)) {
+      throw incomplete(`${provider.displayName} sign-in was cancelled.`);
+    }
+    const { signInOpenWebUi, requestedOpenWebUiOrigin } = await import("./openwebui-onboarding.mjs");
+    await signInOpenWebUi({ origin: requestedOpenWebUiOrigin() });
+    if (!providerConfigured(provider)) {
+      throw incomplete(`${provider.displayName} sign-in did not produce a usable credential.`);
+    }
+  } else if (provider.kind === "oauth") {
     if (provider.id === "antigravity-oauth") {
       if (!confirm(`Open a browser to sign in to ${provider.displayName} now?`)) {
         throw incomplete(`${provider.displayName} sign-in was cancelled.`);

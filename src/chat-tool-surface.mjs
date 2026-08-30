@@ -215,10 +215,10 @@ function withRequiredAppTools(tools, required) {
 export function chatProviderToolSurface(
   tools,
   providerId,
-  { input, toolChoice } = {},
+  { input, toolChoice, maxNameLength } = {},
 ) {
   const merged = mergeCodexAppTools(tools);
-  if (providerId !== "groq") return flattenNamespaceTools(merged.tools);
+  if (providerId !== "groq") return flattenNamespaceTools(merged.tools, { maxNameLength });
 
   // Groq has no OpenCode-style length bound, but it still needs deterministic
   // aliases when two distinct native identities have the same flattened wire

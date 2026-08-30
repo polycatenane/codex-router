@@ -75,8 +75,8 @@ export const COMMANDS = {
     args: ["local-models", "lmstudio-set", requireTag(model ?? id), enabled ? "on" : "off"],
   }),
   install_provider_cli: ({ provider }) => ({ args: ["install-cli", requireProvider(provider)] }),
-  connect_oauth: ({ provider }) => ({
-    args: ["login", requireProvider(provider)],
+  connect_oauth: ({ provider, origin }) => ({
+    args: ["login", requireProvider(provider), ...(origin ? [String(origin)] : [])],
     timeoutMs: OAUTH_LOGIN_TIMEOUT_MS,
     then: ["providers", "--json"],
   }),

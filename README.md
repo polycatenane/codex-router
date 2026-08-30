@@ -458,6 +458,43 @@ either Z.ai endpoint -- both the OpenAI-compatible coding route and the
 Anthropic route reject `glm-5.3[1m]` with error 1214 -- and it was never
 needed: a live run accepted 990,020 prompt tokens on the plain `glm-5.3`
 code.
+### Open WebUI SSO
+
+Open WebUI can reuse a user's browser SSO session without an administrator API
+key. Sign in explicitly from an interactive terminal; the visible Playwright
+browser is opened only when the saved session cannot be validated, and its
+Chromium download is requested only at that point:
+
+```sh
+./bin/model-router codex providers login openwebui https://chat.example.com
+./bin/curate-models openwebui
+./bin/model-router codex providers enable openwebui
+```
+
+The login validates `GET /api/models`, extracts only Open WebUI's `token`
+cookie, and stores that bearer JWT in protected local credential storage. It
+does not retain Playwright storage state or use the legacy `oauth_id_token`
+cookie. Curation preserves each opaque model ID as `openwebui/<raw-id>` and
+asks which Open WebUI protocol that model exposes (`chat` or `messages`),
+whether the model accepts OpenAI `web_search_options`, and whether its function
+tool names must be capped at 64 characters. Scripted curation names the first
+two explicitly, for example
+`./bin/curate-models openwebui --models company/coding --protocol chat --web-search-options forward`.
+Repair a strict existing model without rediscovering or reselecting it:
+
+```sh
+./bin/curate-models openwebui --configure-model openai.gpt-5.6-sol --web-search-options drop --apply
+./bin/curate-models openwebui --configure-model bedrock-claude-5-opus --tool-name-limit 64 --apply
+./bin/curate-models openwebui --configure-model bedrock-claude-5-opus --protocol chat --apply
+```
+Every routed request revalidates the saved session against `/api/models`.
+A rejected session requires the explicit login command again; the router never
+opens a browser in the background. Remove local state with:
+
+```sh
+./bin/model-router codex providers logout openwebui
+```
+
 Beyond the built-in models, each API-key provider's live catalog can be
 curated interactively: `./bin/curate-models PROVIDER` lists the models the
 provider currently advertises that are not in the registry, lets you toggle

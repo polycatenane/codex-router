@@ -343,3 +343,32 @@ test("non-Groq providers preserve the normally expanded tool surface", () => {
   assert.deepEqual(routed.tools, expected.tools);
   assert.deepEqual([...routed.namespaces], [...expected.namespaces]);
 });
+
+test("a per-model 64-character cap aliases Open WebUI namespace tools reversibly", () => {
+  const namespace = "mcp__codex_apps__codex_document_control";
+  const nativeName = "execute_document_command_with_long_provider_visible_name";
+  const routed = chatProviderToolSurface([
+    {
+      type: "namespace",
+      name: namespace,
+      tools: [{ type: "function", name: nativeName, parameters: { type: "object" } }],
+    },
+  ], "openwebui", { maxNameLength: 64 });
+  const alias = routed.tools[0].name;
+  assert.equal(alias.length, 64);
+  assert.notEqual(alias, `${namespace}__${nativeName}`);
+  const history = flattenNamespacedHistory([
+    { type: "function_call", name: nativeName, namespace, call_id: "call-1", arguments: "{}" },
+  ], routed.namespaces);
+  assert.equal(history[0].name, alias);
+  const restored = rewriteNamespaceResponsePayload({
+    output: [{ type: "function_call", name: alias, call_id: "call-1", arguments: "{}" }],
+  }, buildNamespaceLookups(routed.namespaces));
+  assert.deepEqual(restored.output[0], {
+    type: "function_call",
+    name: nativeName,
+    namespace,
+    call_id: "call-1",
+    arguments: "{}",
+  });
+});

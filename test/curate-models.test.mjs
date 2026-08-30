@@ -22,6 +22,7 @@ const {
   parseRequestProfile,
   planCuration,
   renderRows,
+  updateOpenWebUiCompatibility,
   uniformProviderFamilyRequestProfile,
 } =
   await import("../src/curate-models.mjs");
@@ -71,6 +72,35 @@ test("curation merges current unrelated providers and rejects stale same-provide
     ),
     /changed while this command was running/,
   );
+});
+
+test("Open WebUI compatibility updates alter only the requested model settings", () => {
+  const original = {
+    provider: "openwebui",
+    upstreamModel: "bedrock-claude-5-opus",
+    openWebUiProtocol: "messages",
+    contextWindow: 200000,
+  };
+  const dropped = updateOpenWebUiCompatibility(original, {
+    protocol: "chat",
+    webSearchOptions: "drop",
+    toolNameLimit: 64,
+    toolNameLimitSpecified: true,
+  });
+  assert.deepEqual(dropped, {
+    ...original,
+    openWebUiProtocol: "chat",
+    openWebUiWebSearchOptions: "drop",
+    openWebUiToolNameLimit: 64,
+  });
+  assert.deepEqual(updateOpenWebUiCompatibility(dropped, {
+    toolNameLimit: undefined,
+    toolNameLimitSpecified: true,
+  }), {
+    ...original,
+    openWebUiProtocol: "chat",
+    openWebUiWebSearchOptions: "drop",
+  });
 });
 
 test("OpenCode curation keeps each endpoint family on its documented protocol", () => {

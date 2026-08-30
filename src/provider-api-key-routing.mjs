@@ -9,6 +9,7 @@ import {
   resolveProviderCredential,
   resolveProviderCredentialReference,
 } from "./provider-credentials.mjs";
+import { openWebUiSessionStatus } from "./openwebui-session.mjs";
 import { readProviderCredentialStore } from "./provider-credential-store.mjs";
 import { PROVIDERS, providerNeedsNoKey } from "./model-registry.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
@@ -136,6 +137,12 @@ function poolAuthorityForProvider(provider, options) {
  * without a legacy key, while an unusable pool cannot be masked by one.
  */
 export function effectiveProviderCredentialStatus(provider, options = {}) {
+  if (provider.authProfile === "openwebui-session") {
+    const session = openWebUiSessionStatus();
+    return session.configured
+      ? { configured: true, source: session.source, persistent: true }
+      : { configured: false, setup: "Run ./bin/model-router codex providers login openwebui" };
+  }
   if (providerNeedsNoKey(provider)) {
     return credentialStatus(provider, { persistent: options.persistent === true });
   }
@@ -184,6 +191,15 @@ export async function resolveProviderApiKeyForRequest(
     staleMs,
   } = {},
 ) {
+  if (provider?.authProfile === "openwebui-session") {
+    const session = openWebUiSessionStatus();
+    return {
+      credential: session.configured ? session.credential : undefined,
+      pooled: false,
+      configured: false,
+      fallbackAllowed: true,
+    };
+  }
   // API-key pools are provider-level authority. Per-model endpoint descriptors
   // deliberately derive their id from the model slug (for example
   // `custom/foo`) so each model keeps a distinct credential; those ids are not

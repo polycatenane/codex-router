@@ -345,6 +345,9 @@ export function resolveGenericProviderCredentialReference(providerId, secretRef)
 }
 
 export function credentialSetupHint(provider) {
+  if (provider.authProfile === "openwebui-session") {
+    return `Run ${targetCli("providers login openwebui")}`;
+  }
   if (provider.authMode === "anonymous") return "No key needed; free models are rate limited by the provider.";
   if (provider.authMode === "per-model") return "No key needed here; each model names its own endpoint.";
   if (provider.keyless) return "No key needed; it runs on this machine.";
@@ -353,6 +356,7 @@ export function credentialSetupHint(provider) {
 }
 
 export function credentialLabel(provider) {
+  if (provider.authProfile === "openwebui-session") return "SSO session";
   if (provider.authMode === "anonymous") return "No API key";
   if (provider.authMode === "per-model") return "Per-model endpoints";
   return provider.credential?.label || "API key";

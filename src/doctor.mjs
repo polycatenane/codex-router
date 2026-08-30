@@ -1075,7 +1075,9 @@ for (const provider of PROVIDERS.values()) {
         ? provider.anonymousNote || "No key needed; only the provider's free models are available."
       : provider.authMode === "per-model"
         ? "Each model here names its own endpoint; a model that needs a key reports it on its own row."
-      : `Run ./bin/provider-key ${provider.id} set.`,
+      : provider.authProfile === "openwebui-session"
+        ? "Run ./bin/model-router codex providers login openwebui."
+        : `Run ./bin/provider-key ${provider.id} set.`,
   );
   // A credential that resolves says nothing about whether the account's plan
   // may use the API. Only warn once the provider is actually selected, so the

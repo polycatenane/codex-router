@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "openwebui",
+      "displayName": "Open WebUI",
+      "kind": "openai-compatible",
+      "ownedBy": "openwebui",
+      "baseUrl": "https://openwebui.invalid",
+      "authProfile": "openwebui-session",
+      "credential": {
+        "environment": [],
+        "file": "openwebui-session.secret",
+        "legacyFiles": [],
+        "keychainServices": [],
+        "label": "SSO session",
+        "prompt": "Open WebUI session"
+      }
+    }
+  ]
+}

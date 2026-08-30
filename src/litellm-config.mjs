@@ -45,15 +45,18 @@ export function renderLiteLlmConfig() {
       );
       continue;
     }
+    const providerProtocol = provider.authProfile === "openwebui-session"
+      ? model.openWebUiProtocol === "messages" ? "anthropic" : "openai"
+      : provider.protocol;
     const apiBaseEnv = provider.kind === "oauth"
       ? provider.proxyBaseEnv
-      : provider.protocol === "anthropic"
+      : providerProtocol === "anthropic"
         ? "CODEX_ROUTER_ANTHROPIC_FORWARD_BASE_URL"
         : "CODEX_ROUTER_API_FORWARD_BASE_URL";
     const translatedModel =
       provider.kind === "oauth" ? model.upstreamModel : model.gatewayModel;
-    const protocol = provider.protocol === "anthropic" ? "anthropic" : "openai";
-    const responsesSurface = provider.protocol === "openai-responses";
+    const protocol = providerProtocol === "anthropic" ? "anthropic" : "openai";
+    const responsesSurface = providerProtocol === "openai-responses";
     lines.push(
       `  - model_name: ${yamlString(model.gatewayModel)}`,
       "    litellm_params:",
