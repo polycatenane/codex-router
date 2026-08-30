@@ -2936,12 +2936,11 @@ async function buildRoutedRequest({ request, payload, route, agedInput, tokenMax
   // the model copies the bare names out of its own transcript.
   if (namespacesFlattened) {
     routedInput = flattenNamespacedHistory(routedInput, flattenedNamespaces);
-    if (provider?.id === "groq") {
-      routedToolChoice = flattenToolChoice(
-        routedToolChoice,
-        flattenedNamespaces,
-      );
-    }
+    // A forced native namespace reference names the same function identity as
+    // the flattened provider tool definition. Every chat provider must see
+    // the provider-visible alias here: Bedrock validates toolChoice.name
+    // against toolConfig.tools and otherwise rejects the entire turn.
+    routedToolChoice = flattenToolChoice(routedToolChoice, flattenedNamespaces);
   }
   if (consoleGoResponsesCompatibility) {
     routedToolChoice = flattenToolChoice(routedToolChoice, flattenedNamespaces);

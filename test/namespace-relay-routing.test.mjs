@@ -583,6 +583,57 @@ function groqModelFixture() {
   return { directory, userModels, model: "groq/tool-limit-fixture" };
 }
 
+function openWebUiBedrockFixture() {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "openwebui-bedrock-tool-choice-"));
+  const userModels = path.join(directory, "user-models.json");
+  writeFileSync(
+    userModels,
+    JSON.stringify({
+      version: 1,
+      models: [{
+        slug: "openwebui/bedrock-tool-choice-fixture",
+        gatewayModel: "openwebui--YmVkcm9jay10b29sLWNob2ljZS1maXh0dXJl",
+        upstreamModel: "bedrock-tool-choice-fixture",
+        provider: "openwebui",
+        listed: true,
+        displayName: "Open WebUI Bedrock tool-choice fixture",
+        description: "Local routing test fixture.",
+        priority: 500,
+        defaultEffort: "high",
+        reasoningLevels: [{ effort: "high", description: "Adaptive reasoning" }],
+        contextWindow: 131072,
+        autoCompact: 111411,
+        inputModalities: ["text"],
+        compHash: "openwebui-bedrock-tool-choice-fixture-v1",
+        openWebUiProtocol: "messages",
+        openWebUiToolNameLimit: 64,
+      }],
+    }),
+    "utf8",
+  );
+  return { directory, userModels, model: "openwebui/bedrock-tool-choice-fixture" };
+}
+
+function openWebUiForcedNamespacedToolPayload(stream = false, model) {
+  const namespace = "mcp__codex_apps__codex_document_control";
+  const name = "execute_document_command";
+  return {
+    model,
+    stream,
+    input: "Use the forced tool.",
+    tools: [{
+      type: "namespace",
+      name: namespace,
+      tools: [{
+        type: "function",
+        name,
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      }],
+    }],
+    tool_choice: { type: "function", name, namespace },
+  };
+}
+
 function sseEvent(event) {
   return `data: ${JSON.stringify(event)}\n\n`;
 }
@@ -966,6 +1017,30 @@ test("Groq re-adds and flattens a forced deferred app choice", async () => {
       type: "function",
       name: "codex_app__send_message_to_thread",
     });
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("Open WebUI Bedrock routes a forced namespaced tool choice to its alias", async () => {
+  const fixture = openWebUiBedrockFixture();
+  try {
+    const result = await scenario(false, {
+      model: fixture.model,
+      requestPayload: openWebUiForcedNamespacedToolPayload,
+      jsonBody: () => ({ id: "openwebui-forced-tool", output: [] }),
+      routerEnv: { MODEL_ROUTER_USER_MODELS: fixture.userModels },
+    });
+    assert.equal(result.gatewayBodies.length, 1);
+    const outgoing = result.gatewayBodies[0];
+    const forcedName = outgoing.tool_choice.name;
+    assert.equal(outgoing.tool_choice.namespace, undefined);
+    assert.ok(forcedName.length <= 64);
+    assert.notEqual(
+      forcedName,
+      "mcp__codex_apps__codex_document_control__execute_document_command",
+    );
+    assert.ok(outgoing.tools.some((tool) => tool.name === forcedName));
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true });
   }
