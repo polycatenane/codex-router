@@ -50,6 +50,7 @@ import { relayCommandCodeGenerate } from "./commandcode-relay.mjs";
 import { VERSION } from "./version.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
 import { zaiCacheUsageTransform } from "./zai-cache-usage.mjs";
+import { createOpenWebUiMessagesInlineToolInputTransform } from "./openwebui-messages-stream.mjs";
 import {
   createResponsesJsonTransform,
   createResponsesStreamTransform,
@@ -1047,6 +1048,10 @@ async function relayUpstreamResponse(
   const responsesJson = normalized.responseAdapter === "responses" &&
     upstream.ok && upstreamContentType.toLowerCase().includes("application/json");
   const transform = [
+    normalized.provider.authProfile === "openwebui-session" && normalized.protocol === "anthropic" &&
+    upstream.ok && upstreamContentType.toLowerCase().includes("text/event-stream")
+      ? createOpenWebUiMessagesInlineToolInputTransform()
+      : undefined,
     responsesStream ? createResponsesStreamTransform() : undefined,
     responsesJson ? createResponsesJsonTransform() : undefined,
     zaiCacheUsageTransform(normalized.provider.id, upstreamContentType),

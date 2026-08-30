@@ -70,8 +70,23 @@ function sseFrame(event, data) {
   return `${event ? `event: ${event}\n` : ""}data: ${JSON.stringify(data)}\n\n`;
 }
 
-function openWebUiToolStream(protocol) {
+function openWebUiToolStream(protocol, { interleaved = false } = {}) {
   if (protocol === "messages") {
+    const interleavedText = interleaved
+      ? [
+          sseFrame("content_block_start", {
+            type: "content_block_start",
+            index: 1,
+            content_block: { type: "text", text: "" },
+          }),
+          sseFrame("content_block_delta", {
+            type: "content_block_delta",
+            index: 1,
+            delta: { type: "text_delta", text: "working" },
+          }),
+          sseFrame("content_block_stop", { type: "content_block_stop", index: 1 }),
+        ]
+      : [];
     return [
       sseFrame("message_start", {
         type: "message_start",
@@ -89,8 +104,14 @@ function openWebUiToolStream(protocol) {
       sseFrame("content_block_start", {
         type: "content_block_start",
         index: 0,
-        content_block: { type: "tool_use", id: OPENWEBUI_TOOL_CALL_ID, name: "exec_command", input: {} },
+        content_block: {
+          type: "tool_use",
+          id: OPENWEBUI_TOOL_CALL_ID,
+          name: "exec_command",
+          input: {},
+        },
       }),
+      ...interleavedText,
       ...TOOL_ARGUMENT_FRAGMENTS.map((partial_json) => sseFrame("content_block_delta", {
         type: "content_block_delta",
         index: 0,
@@ -338,7 +359,7 @@ test(
 );
 
 test(
-  "Open WebUI Chat and Messages streams preserve fragmented tool arguments through LiteLLM",
+  "Open WebUI Chat and interleaved Messages streams preserve tool arguments through LiteLLM",
   {
     skip: !enabled
       ? "set MODEL_ROUTER_LITELLM_INTEGRATION=1 for the pinned-adapter integration test"
@@ -349,6 +370,7 @@ test(
   },
   async () => {
     for (const protocol of ["chat", "messages"]) {
+      const interleaved = protocol === "messages";
       const [mockPort, routerPort, gatewayPort, oauthPort, apiPort, grokOauthPort] =
         await freePorts(6);
       const testRoot = mkdtempSync(path.join(os.tmpdir(), `codex-openwebui-${protocol}-e2e-`));
@@ -421,7 +443,7 @@ test(
         });
         const expectedPath = protocol === "messages" ? "/api/v1/messages" : "/api/chat/completions";
         assert.equal(request.url, expectedPath);
-        const frames = openWebUiToolStream(protocol);
+        const frames = openWebUiToolStream(protocol, { interleaved });
         response.writeHead(200, { "Content-Type": "text/event-stream" });
         for (const fragment of TOOL_ARGUMENT_FRAGMENTS) {
           trace.rawOpenWebUiStream.push(redactedToolTrace({
@@ -520,6 +542,11 @@ test(
           (tool) => providerToolName(tool) === "exec_command",
         );
         assert.equal(wireToolIndex, 0);
+        const wireFunction = generation.body.tools[wireToolIndex]?.function ||
+          generation.body.tools[wireToolIndex];
+        const wireSchema = wireFunction.parameters || wireFunction.input_schema;
+        assert.ok(wireSchema?.properties?.cmd);
+        assert.ok(wireSchema?.required?.includes("cmd"));
         trace.routerToOpenWebUi.push(redactedToolTrace({
           callId: OPENWEBUI_TOOL_CALL_ID,
           toolIndex: wireToolIndex,
