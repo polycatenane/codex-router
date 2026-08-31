@@ -188,6 +188,19 @@ test("Responses stream rejects unknown, conflicting, and post-terminal tool indi
   assert.match(afterTerminal.at(-1).data.message, /after its terminal/);
 });
 
+test("Responses stream validation rejects a non-sequential provider-owned output index", async () => {
+  const output = frames(await transformText(createResponsesStreamTransform(), [
+    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-provider-index\"}}\n\n",
+    "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"msg-provider-index\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-provider-index\",\"status\":\"completed\",\"output\":[]}}\n\n",
+    "data: [DONE]\n\n",
+  ]));
+  assert.equal(output.some((frame) => frame.data?.type === "response.completed"), false);
+  assert.equal(output.at(-1).event, "error");
+  assert.equal(output.at(-1).data.code, "invalid_responses_stream");
+  assert.match(output.at(-1).data.message, /non-sequential output index/);
+});
+
 test("Responses provider errors stay structured and do not gain a second terminal frame", async () => {
   const output = frames(await transformText(createResponsesStreamTransform(), [
     "event: error\ndata: {\"type\":\"error\",\"code\":\"provider_failed\",\"message\":\"upstream rejected\"}\n\n",

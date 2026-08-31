@@ -170,6 +170,71 @@ function responsesEvents(body) {
   });
 }
 
+function openWebUiResponsesStream() {
+  // Unlike the chat and messages branches above, an Open WebUI responses
+  // route never crosses LiteLLM's Chat -> Responses bridge, so the mock here
+  // plays the exact shape LiteLLM's OpenAI Responses adapter passes through
+  // untouched: no translation happens on either side of that hop.
+  return [
+    sseFrame("response.created", {
+      type: "response.created",
+      response: { id: "resp_openwebui_responses", model: "bedrock-claude-test", status: "in_progress" },
+    }),
+    sseFrame("response.output_item.added", {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: {
+        type: "function_call",
+        id: OPENWEBUI_TOOL_CALL_ID,
+        call_id: OPENWEBUI_TOOL_CALL_ID,
+        name: "exec_command",
+        arguments: "",
+      },
+    }),
+    ...TOOL_ARGUMENT_FRAGMENTS.map((delta) => sseFrame("response.function_call_arguments.delta", {
+      type: "response.function_call_arguments.delta",
+      item_id: OPENWEBUI_TOOL_CALL_ID,
+      output_index: 0,
+      delta,
+    })),
+    sseFrame("response.function_call_arguments.done", {
+      type: "response.function_call_arguments.done",
+      item_id: OPENWEBUI_TOOL_CALL_ID,
+      output_index: 0,
+      arguments: TOOL_ARGUMENT_FRAGMENTS.join(""),
+    }),
+    sseFrame("response.output_item.done", {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        type: "function_call",
+        id: OPENWEBUI_TOOL_CALL_ID,
+        call_id: OPENWEBUI_TOOL_CALL_ID,
+        name: "exec_command",
+        arguments: TOOL_ARGUMENT_FRAGMENTS.join(""),
+        status: "completed",
+      },
+    }),
+    sseFrame("response.completed", {
+      type: "response.completed",
+      response: {
+        id: "resp_openwebui_responses",
+        model: "bedrock-claude-test",
+        status: "completed",
+        output: [{
+          type: "function_call",
+          id: OPENWEBUI_TOOL_CALL_ID,
+          call_id: OPENWEBUI_TOOL_CALL_ID,
+          name: "exec_command",
+          arguments: TOOL_ARGUMENT_FRAGMENTS.join(""),
+          status: "completed",
+        }],
+      },
+    }),
+    "data: [DONE]\n\n",
+  ];
+}
+
 function fullCodexToolCatalog() {
   // This is the client-visible local command together with the complete app
   // snapshot the router normally expands into every routed chat surface.
@@ -598,6 +663,169 @@ test(
         await new Promise((resolve) => mock.close(resolve));
         rmSync(testRoot, { recursive: true, force: true });
       }
+    }
+  },
+);
+
+test(
+  "Open WebUI responses model relays a verbatim upstream Responses stream with no repair stage",
+  {
+    skip: !enabled
+      ? "set MODEL_ROUTER_LITELLM_INTEGRATION=1 for the pinned-adapter integration test"
+      : !existsSync(litellm)
+        ? "run ./install.sh --target codex --prepare-only first"
+        : false,
+    timeout: 90_000,
+  },
+  async () => {
+    const [mockPort, routerPort, gatewayPort, oauthPort, apiPort, grokOauthPort] =
+      await freePorts(6);
+    const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-openwebui-responses-e2e-"));
+    const stateDir = path.join(testRoot, "state");
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(stateDir, "internal-secret"), `${INTERNAL_KEY}\n`, { mode: 0o600 });
+    writeFileSync(path.join(stateDir, "caller-secret"), `${CALLER_KEY}\n`, { mode: 0o600 });
+    writeFileSync(path.join(stateDir, "openwebui-session.secret"), `${OPENWEBUI_TOKEN}\n`, {
+      mode: 0o600,
+    });
+    writeFileSync(
+      path.join(stateDir, "openwebui-origin.json"),
+      `${JSON.stringify({ version: 1, baseUrl: `http://127.0.0.1:${mockPort}` })}\n`,
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      path.join(stateDir, "enabled-providers.json"),
+      `${JSON.stringify({ version: 1, providers: ["openwebui"] })}\n`,
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      path.join(stateDir, "user-models.json"),
+      `${JSON.stringify({
+        version: 1,
+        models: [{
+          slug: "openwebui/bedrock-claude-test",
+          gatewayModel: "openwebui--YmVkcm9jay1jbGF1ZGUtdGVzdA",
+          compHash: "openwebui-responses-stream-fixture-v1",
+          upstreamModel: "bedrock-claude-test",
+          provider: "openwebui",
+          listed: true,
+          displayName: "Open WebUI responses fixture",
+          description: "Test fixture.",
+          priority: 100,
+          defaultEffort: "high",
+          reasoningLevels: [{ effort: "high", description: "Adaptive reasoning" }],
+          contextWindow: 131072,
+          autoCompact: 110000,
+          inputModalities: ["text"],
+          openWebUiProtocol: "responses",
+        }],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const received = [];
+    const mock = http.createServer(async (request, response) => {
+      if (request.method === "GET" && request.url === "/api/models") {
+        received.push({ method: request.method, url: request.url, headers: request.headers });
+        const body = JSON.stringify({ object: "list", data: [] });
+        response.writeHead(200, { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(body)) });
+        response.end(body);
+        return;
+      }
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      received.push({
+        method: request.method,
+        url: request.url,
+        headers: request.headers,
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      });
+      // Unlike /api/chat/completions or /api/v1/messages, this is the raw
+      // Open WebUI passthrough route: no chat pipeline, no RAG, no filters.
+      assert.equal(request.url, "/openai/responses");
+      const body = Buffer.from(openWebUiResponsesStream().join(""), "utf8");
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(body);
+    });
+    await new Promise((resolve, reject) => {
+      mock.once("error", reject);
+      mock.listen(mockPort, "127.0.0.1", resolve);
+    });
+
+    const stack = spawn(process.execPath, [path.join(root, "src", "start.mjs")], {
+      cwd: root,
+      env: {
+        ...process.env,
+        MODEL_ROUTER_TARGET: "codex",
+        MODEL_ROUTER_STATE_DIR: stateDir,
+        MODEL_ROUTER_PORT: String(routerPort),
+        MODEL_ROUTER_GATEWAY_PORT: String(gatewayPort),
+        MODEL_ROUTER_OAUTH_PORT: String(oauthPort),
+        MODEL_ROUTER_API_PORT: String(apiPort),
+        MODEL_ROUTER_GROK_OAUTH_PORT: String(grokOauthPort),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stackOutput = "";
+    stack.stdout.setEncoding("utf8");
+    stack.stderr.setEncoding("utf8");
+    stack.stdout.on("data", (chunk) => { stackOutput += chunk; });
+    stack.stderr.on("data", (chunk) => { stackOutput += chunk; });
+
+    try {
+      await waitForRouter(routerPort, stack, () => stackOutput);
+      const originalCatalog = fullCodexToolCatalog();
+      const response = await fetch(`${callerBaseUrl(routerPort, CALLER_KEY)}/responses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "openwebui/bedrock-claude-test",
+          input: "Run git status with the exec_command tool.",
+          tools: originalCatalog,
+          tool_choice: "required",
+          stream: true,
+        }),
+      });
+      const body = await response.text();
+      assert.equal(response.status, 200, `${body}\n${stackOutput}`);
+      const events = responsesEvents(body);
+      const upstreamEvents = responsesEvents(openWebUiResponsesStream().join(""));
+      // "No repair stage inserted" is proven by exact event equality, once
+      // LiteLLM's own routing metadata is stripped: LiteLLM's Responses
+      // passthrough stamps every event with `model` and rewrites
+      // `response.id` into its own deployment-routing token, which is
+      // LiteLLM's bookkeeping and not a router repair stage. Everything else
+      // -- event count, order, and every other field -- must survive
+      // byte-for-byte, which is what distinguishes this from the chat and
+      // messages routes above, where the router assembles and re-emits its
+      // own events from a translated wire shape.
+      const stripLiteLlmRouting = (list) => list.map(({ model, ...event }) => {
+        if (event.response && typeof event.response === "object") {
+          const { id: _responseId, ...rest } = event.response;
+          return { ...event, response: rest };
+        }
+        return event;
+      });
+      assert.equal(events.length, upstreamEvents.length);
+      assert.deepEqual(events.map((event) => event.type), upstreamEvents.map((event) => event.type));
+      assert.deepEqual(stripLiteLlmRouting(events), stripLiteLlmRouting(upstreamEvents));
+      const generation = received.find((entry) => entry.method === "POST");
+      assert.equal(generation?.url, "/openai/responses");
+      assert.equal(generation?.headers?.authorization, `Bearer ${OPENWEBUI_TOKEN}`);
+      // The client-facing slug is rewritten to the upstream's own model id on
+      // the wire, exactly like the chat and messages routes.
+      assert.equal(generation?.body?.model, "bedrock-claude-test");
+      // Namespace tools reach the upstream in Codex's native shape: nothing
+      // flattens them, because this model carries no openWebUiToolNameLimit
+      // opt-in and its route never crosses a chat-completions bridge.
+      assert.ok(
+        generation?.body?.tools?.some((tool) => tool?.type === "namespace"),
+        "namespace tools are forwarded to Open WebUI exactly as Codex built them",
+      );
+    } finally {
+      await stopProcess(stack);
+      await new Promise((resolve) => mock.close(resolve));
+      rmSync(testRoot, { recursive: true, force: true });
     }
   },
 );

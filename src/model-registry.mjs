@@ -567,14 +567,20 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     return `anonymous provider ${provider.id} only accepts its documented free-model ids`;
   }
   if (provider.authProfile === "openwebui-session") {
-    if (!['chat', 'messages'].includes(model.openWebUiProtocol)) {
-      return `Open WebUI model ${model.slug} requires an explicit chat or messages protocol`;
+    if (!['chat', 'messages', 'responses'].includes(model.openWebUiProtocol)) {
+      return `Open WebUI model ${model.slug} requires an explicit chat, messages, or responses protocol`;
     }
     if (
       model.openWebUiWebSearchOptions !== undefined &&
       !["forward", "drop"].includes(model.openWebUiWebSearchOptions)
     ) {
       return `Open WebUI model ${model.slug} has an invalid web-search-options setting`;
+    }
+    if (
+      model.openWebUiReasoningControls !== undefined &&
+      !["forward", "drop"].includes(model.openWebUiReasoningControls)
+    ) {
+      return `Open WebUI model ${model.slug} has an invalid reasoning-controls setting`;
     }
     if (
       model.openWebUiToolNameLimit !== undefined &&
@@ -586,6 +592,7 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     return `model ${model.slug} has Open WebUI protocol metadata outside Open WebUI`;
   } else if (
     model.openWebUiWebSearchOptions !== undefined ||
+    model.openWebUiReasoningControls !== undefined ||
     model.openWebUiToolNameLimit !== undefined
   ) {
     return `model ${model.slug} has Open WebUI compatibility metadata outside Open WebUI`;
@@ -613,7 +620,7 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
     }
-    const conversational = providerModelEndpoint(provider);
+    const conversational = providerModelEndpoint(provider, model);
     if (!conversational && supported.includes("/embeddings")) {
       return `model ${model.slug} cannot declare OpenAI endpoints for provider protocol ${provider.protocol}`;
     }

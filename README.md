@@ -475,7 +475,8 @@ The login validates `GET /api/models`, extracts only Open WebUI's `token`
 cookie, and stores that bearer JWT in protected local credential storage. It
 does not retain Playwright storage state or use the legacy `oauth_id_token`
 cookie. Curation preserves each opaque model ID as `openwebui/<raw-id>` and
-asks which Open WebUI protocol that model exposes (`chat` or `messages`),
+asks which Open WebUI protocol that model exposes (`chat`, `messages`, or
+`responses`),
 whether the model accepts OpenAI `web_search_options`, and whether its function
 tool names must be capped at 64 characters. Scripted curation names the first
 two explicitly, for example
@@ -487,6 +488,44 @@ Repair a strict existing model without rediscovering or reselecting it:
 ./bin/curate-models openwebui --configure-model bedrock-claude-5-opus --tool-name-limit 64 --apply
 ./bin/curate-models openwebui --configure-model bedrock-claude-5-opus --protocol chat --apply
 ```
+
+Curation also asks, separately, whether the account forwards reasoning
+controls at all (`--reasoning-controls forward|drop`, stored as
+`openWebUiReasoningControls`). It defaults to `forward` -- every existing
+curated model, and Claude models generally, keep sending `reasoning`/
+`reasoning_effort` exactly as before. `drop` exists because some deployments
+mistranslate reasoning into an Anthropic `thinking` parameter the model
+rejects: measured against `genai.arizona.edu` for `openai.gpt-5.6-sol`,
+`-terra`, and `-luna`, `/openai/responses` with `reasoning.effort` of `low` or
+`minimal` returns HTTP 400 `Unknown parameter: 'thinking'`, and
+`/api/chat/completions` with a flat `reasoning_effort` returns the same 400 --
+the account's Bedrock-backed gateway builds that `thinking` param for any
+non-`gpt-oss`, non-Nova model, which is wrong for an OpenAI model behind a
+Bedrock inference profile. Nothing this router sends can fix that upstream
+behavior, so `drop` removes both `reasoning` and `reasoning_effort` from the
+outbound request instead, and the picker stops advertising an effort ladder
+the model cannot honor. Repair an already-curated model the same way:
+
+```sh
+./bin/curate-models openwebui --configure-model openai.gpt-5.6-sol --reasoning-controls drop --apply
+```
+
+`chat` routes to `POST /api/chat/completions` and `messages` to
+`POST /api/v1/messages`; both enter Open WebUI's own chat pipeline, so RAG,
+filters, and other pipeline behavior the workspace has configured still apply.
+`responses` routes to `POST /openai/responses` instead. That endpoint bypasses
+Open WebUI's chat pipeline entirely -- no RAG, no filters, no workspace model
+presets -- and forwards the request to the upstream Responses endpoint nearly
+untouched, returning its SSE stream verbatim. The router therefore does not
+apply its generic Responses SSE validator or repair provider-owned event shapes
+on this route; genuine terminal and error events are relayed as Open WebUI sent
+them. A model is only responses-shaped
+because the operator says so at curation time; nothing in Open WebUI's model
+list marks a model Responses-capable, so pick `--protocol responses` only for
+a connection you have confirmed accepts Responses payloads. A model curated
+this way must still be listed in the signed-in user's workspace: a non-admin
+session gets HTTP 403 from Open WebUI for a model it is not otherwise
+authorized to use, exactly as it would for the chat pipeline.
 Every routed request revalidates the saved session against `/api/models`.
 A rejected session requires the explicit login command again; the router never
 opens a browser in the background. Remove local state with:

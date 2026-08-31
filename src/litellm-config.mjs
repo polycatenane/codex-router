@@ -46,7 +46,11 @@ export function renderLiteLlmConfig() {
       continue;
     }
     const providerProtocol = provider.authProfile === "openwebui-session"
-      ? model.openWebUiProtocol === "messages" ? "anthropic" : "openai"
+      ? model.openWebUiProtocol === "messages"
+        ? "anthropic"
+        : model.openWebUiProtocol === "responses"
+          ? "openai-responses"
+          : "openai"
       : provider.protocol;
     const apiBaseEnv = provider.kind === "oauth"
       ? provider.proxyBaseEnv

@@ -27,7 +27,16 @@ export function normalizeSupportedEndpoints(value, { field = "supportedEndpoints
   return result;
 }
 
-export function providerModelEndpoint(provider) {
+export function providerModelEndpoint(provider, model) {
+  // Open WebUI's conversational endpoint is per-model, not per-provider: the
+  // provider record never carries a protocol (the account can host chat,
+  // messages, and responses models side by side), so a model's own explicit
+  // openWebUiProtocol claim decides which OpenAI-shaped endpoint it answers.
+  if (provider?.authProfile === "openwebui-session" && model) {
+    if (model.openWebUiProtocol === "responses") return "/responses";
+    if (model.openWebUiProtocol === "messages") return undefined;
+    return "/chat/completions";
+  }
   if (provider?.protocol === undefined || provider?.protocol === "openai") {
     return "/chat/completions";
   }
@@ -40,10 +49,10 @@ export function supportsOpenAIModelEndpoint(route, { model, provider } = {}) {
   // Messages-native providers do not expose OpenAI endpoint contracts. A
   // hand-edited model declaration must not turn Anthropic's /v1 base into an
   // embeddings base merely because both happen to carry JSON.
-  if (providerModelEndpoint(provider) === undefined) return false;
+  if (providerModelEndpoint(provider, model) === undefined) return false;
   const declared = normalizeSupportedEndpoints(model?.supportedEndpoints);
   if (declared !== undefined) return declared.includes(route);
-  return route === providerModelEndpoint(provider);
+  return route === providerModelEndpoint(provider, model);
 }
 
 export function endpointCapabilityError(route, model) {

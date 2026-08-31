@@ -595,7 +595,9 @@ function stripSearchContentTypes(tools) {
 
 function upstreamProtocol(provider, model) {
   if (provider.authProfile === "openwebui-session") {
-    return model.openWebUiProtocol === "messages" ? "anthropic" : "openai";
+    if (model.openWebUiProtocol === "messages") return "anthropic";
+    if (model.openWebUiProtocol === "responses") return "openai-responses";
+    return "openai";
   }
   return provider.protocol;
 }
@@ -699,6 +701,20 @@ function normalizeBody(buffer, contentType, route) {
     provider.id === "fireworks" ||
     (provider.authProfile === "openwebui-session" && model.openWebUiWebSearchOptions === "drop")
   ) delete payload.web_search_options;
+  // Measured against genai.arizona.edu for openai.gpt-5.6-sol/-terra/-luna:
+  // /openai/responses with reasoning.effort of low or minimal returns 400
+  // "Unknown parameter: 'thinking'", and /api/chat/completions with a flat
+  // reasoning_effort returns the same 400. The account's LiteLLM-based
+  // Bedrock path builds an Anthropic `thinking` param for any non-gpt-oss,
+  // non-Nova model, which is wrong for an OpenAI model behind a Bedrock
+  // inference profile -- nothing this router can send fixes that. Strip both
+  // spellings rather than only the one the current protocol would send:
+  // each route rejects the spelling it treats as real, and neither delivers
+  // reasoning either way.
+  if (provider.authProfile === "openwebui-session" && model.openWebUiReasoningControls === "drop") {
+    delete payload.reasoning;
+    delete payload.reasoning_effort;
+  }
   // Meta refuses `search_content_types` on anything but a `web_search_preview`
   // tool, and Codex only ever sends the current spelling: its hosted search
   // tool is `type: "web_search"`, carrying search_content_types beside
@@ -1047,12 +1063,22 @@ async function relayUpstreamResponse(
     upstream.ok && upstreamContentType.toLowerCase().includes("text/event-stream");
   const responsesJson = normalized.responseAdapter === "responses" &&
     upstream.ok && upstreamContentType.toLowerCase().includes("application/json");
+  // Open WebUI owns the wire contract on /openai/responses and forwards the
+  // provider's SSE stream nearly untouched. Its provider-specific event shapes
+  // can be stricter or looser than the generic adapter below; rejecting one
+  // here inserts an `error` event before a later valid response.completed.
+  // LiteLLM consumes that error and closes its outer stream, so Codex reports a
+  // false "stream closed before response.completed" even though Open WebUI sent
+  // the terminal event. Preserve this route as the documented raw passthrough.
+  const openWebUiResponsesPassthrough = responsesStream &&
+    normalized.provider.authProfile === "openwebui-session" &&
+    normalized.protocol === "openai-responses";
   const transform = [
     normalized.provider.authProfile === "openwebui-session" && normalized.protocol === "anthropic" &&
     upstream.ok && upstreamContentType.toLowerCase().includes("text/event-stream")
       ? createOpenWebUiMessagesInlineToolInputTransform()
       : undefined,
-    responsesStream ? createResponsesStreamTransform() : undefined,
+    responsesStream && !openWebUiResponsesPassthrough ? createResponsesStreamTransform() : undefined,
     responsesJson ? createResponsesJsonTransform() : undefined,
     zaiCacheUsageTransform(normalized.provider.id, upstreamContentType),
   ].filter(Boolean);
@@ -1525,7 +1551,9 @@ async function handleRequest(request, response) {
       session = { baseUrl: openWebUiSession.baseUrl, apiKey: credential.value, headers: {} };
       const apiPath = normalized.protocol === "anthropic"
         ? "api/v1/messages"
-        : "api/chat/completions";
+        : normalized.protocol === "openai-responses"
+          ? "openai/responses"
+          : "api/chat/completions";
       target = openWebUiApiUrl(session.baseUrl, apiPath).toString();
       upstream = await fetchOpenWebUi(session.baseUrl, session.apiKey, apiPath, {
         method: request.method,

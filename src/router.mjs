@@ -2295,7 +2295,15 @@ const OPENWEBUI_COMPACTION_TOOL_ITEMS = new Set([
 ]);
 
 function compactionProviderInput(input, route) {
-  if (providerForModel(route)?.authProfile !== "openwebui-session" || !Array.isArray(input)) {
+  // The filter exists to protect the Responses -> Chat bridge LiteLLM inserts
+  // for chat and messages models; a responses-protocol model's request never
+  // crosses that bridge, so its historical tool items are left exactly as
+  // sent, like every other Responses-native provider.
+  if (
+    providerForModel(route)?.authProfile !== "openwebui-session" ||
+    !["chat", "messages"].includes(route?.openWebUiProtocol) ||
+    !Array.isArray(input)
+  ) {
     return input;
   }
   return input.filter((item) => !OPENWEBUI_COMPACTION_TOOL_ITEMS.has(item?.type));
@@ -2736,11 +2744,38 @@ function observeSubagentOutcome(request, route, status, options = {}) {
 // Both are avoided the same way: nothing here writes to `payload` or to
 // `agedInput`. The tool list is a local, and the input array is copied before
 // anything rewrites it.
+// Open WebUI's provider record carries no protocol of its own -- the account
+// can host chat, messages, and responses models side by side -- so a
+// responses-protocol model's route is the one place a chat-completions
+// bridge is not sitting between Codex and the upstream. Mirrors the same
+// three-way mapping api-forwarder.mjs and litellm-config.mjs each apply at
+// their own module boundary.
+function openWebUiChatCompletionsRoute(provider, route) {
+  if (provider?.authProfile !== "openwebui-session") return provider?.protocol !== "openai-responses";
+  return route?.openWebUiProtocol !== "responses";
+}
+
+// The Anthropic-bridge repair factory keys off `provider.protocol`, which is
+// undefined for every Open WebUI model regardless of which upstream surface
+// it actually crosses. Present it the model's own claim instead of the
+// provider's, so a responses-protocol model reads as untranslated traffic
+// exactly like a native Responses provider, and a chat or messages model
+// keeps reading as translated exactly as before.
+function translatedToolMessageCompatProvider(provider, route) {
+  if (provider?.authProfile !== "openwebui-session") return provider;
+  const protocol = route?.openWebUiProtocol === "messages"
+    ? "anthropic"
+    : route?.openWebUiProtocol === "responses"
+      ? "openai-responses"
+      : "openai";
+  return { ...provider, protocol };
+}
+
 async function buildRoutedRequest({ request, payload, route, agedInput, tokenMaxxing = false }) {
   let namespacesFlattened = false;
   let flattenedNamespaces = new Map();
   const provider = providerForModel(route);
-  const chatCompletionsProvider = provider?.protocol !== "openai-responses";
+  const chatCompletionsProvider = openWebUiChatCompletionsRoute(provider, route);
   const consoleGoResponsesCompatibility = needsConsoleGoResponsesToolCompatibility(route);
   const compatibleInput = zenFreeCompatibleInput(agedInput, route);
   // Image substitution may spend another provider's quota. Every Groq tool
@@ -2844,6 +2879,16 @@ async function buildRoutedRequest({ request, payload, route, agedInput, tokenMax
     // Console Go exposes a Responses endpoint but rejects the native tool
     // discriminators Codex sends. Translate only its tool boundary; unlike the
     // chat-completions branch, do not inject the deferred codex_app snapshot.
+    const flattened = flattenNamespaceTools(tools, { maxNameLength: 64 });
+    namespacesFlattened = flattened.flattened;
+    flattenedNamespaces = flattened.namespaces;
+    tools = flattened.tools;
+  } else if (provider?.authProfile === "openwebui-session" && route.openWebUiToolNameLimit === 64) {
+    // An Open WebUI responses model defaults to Codex's native namespace
+    // shape, matching what the upstream actually forwards untouched. An
+    // explicit 64-character opt-in flattens it the same way Console Go's
+    // Responses variant does, because the operator has measured the same
+    // function-name limit on their own upstream.
     const flattened = flattenNamespaceTools(tools, { maxNameLength: 64 });
     namespacesFlattened = flattened.flattened;
     flattenedNamespaces = flattened.namespaces;
@@ -3722,7 +3767,10 @@ async function handleResponses(request, response, requestUrl) {
       // Chat Completions or Messages. The factory refuses native traffic and
       // providers that already speak Responses, so those paths gain no stage.
       const translatedToolMessageCompat = route
-        ? translatedToolMessageCompatTransform(providerForModel(route), contentType)
+        ? translatedToolMessageCompatTransform(
+          translatedToolMessageCompatProvider(providerForModel(route), route),
+          contentType,
+        )
         : undefined;
       if (translatedToolMessageCompat) transforms.push(translatedToolMessageCompat);
       // Restore flattened namespace calls for routed chat-completions providers,

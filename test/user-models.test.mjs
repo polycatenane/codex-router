@@ -54,6 +54,37 @@ test("Open WebUI curation stores explicit compatibility controls", () => {
   assert.equal(entry.openWebUiToolNameLimit, 64);
 });
 
+test("Open WebUI curation stores the reasoning-controls flag", () => {
+  const entry = userModelEntry({
+    providerId: "openwebui",
+    upstreamId: "openai.gpt-5.6-sol",
+    priority: 100,
+    openWebUiProtocol: "responses",
+    openWebUiReasoningControls: "drop",
+  });
+  assert.equal(entry.openWebUiReasoningControls, "drop");
+});
+
+test("Open WebUI curation omits the reasoning-controls flag when unset", () => {
+  const entry = userModelEntry({
+    providerId: "openwebui",
+    upstreamId: "bedrock-claude-5-opus-forward",
+    priority: 100,
+    openWebUiProtocol: "chat",
+  });
+  assert.equal(entry.openWebUiReasoningControls, undefined);
+});
+
+test("Open WebUI curation stores the responses protocol", () => {
+  const entry = userModelEntry({
+    providerId: "openwebui",
+    upstreamId: "bedrock-claude-5-opus-responses",
+    priority: 100,
+    openWebUiProtocol: "responses",
+  });
+  assert.equal(entry.openWebUiProtocol, "responses");
+});
+
 
 test("curation metadata can set sizing and the effort ladder", () => {
   const entry = userModelEntry({
@@ -165,6 +196,47 @@ test("registry merges valid user models and skips collisions", async () => {
       priority: 100,
       metadata: { availabilityNux: "Now available through your DeepSeek key." },
     }),
+    // A responses-protocol Open WebUI model is an explicit operator claim
+    // like chat or messages, and must be accepted the same way.
+    userModelEntry({
+      providerId: "openwebui",
+      upstreamId: "bedrock-claude-5-opus-responses-registry",
+      priority: 120,
+      openWebUiProtocol: "responses",
+    }),
+    // An unrecognized protocol string must not slip through as if it were
+    // one of the three the router actually routes.
+    {
+      ...userModelEntry({
+        providerId: "openwebui",
+        upstreamId: "bedrock-claude-5-opus-unknown-protocol",
+        priority: 121,
+      }),
+      openWebUiProtocol: "gibberish",
+    },
+    // A reasoning-controls value outside forward/drop must not slip through
+    // either, the same way an unrecognized protocol does not.
+    {
+      ...userModelEntry({
+        providerId: "openwebui",
+        upstreamId: "bedrock-claude-5-opus-bad-reasoning-controls",
+        priority: 123,
+        openWebUiProtocol: "chat",
+      }),
+      openWebUiReasoningControls: "translate",
+    },
+    // Open WebUI protocol metadata is an Open WebUI concept; it must not be
+    // accepted on any other provider's model.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-openwebui-metadata-leak", priority: 122 }),
+      openWebUiProtocol: "responses",
+    },
+    // openWebUiReasoningControls is Open WebUI metadata; it must not be
+    // accepted on any other provider's model either.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-reasoning-controls-leak", priority: 124 }),
+      openWebUiReasoningControls: "drop",
+    },
     // Collides with a built-in slug and must be skipped, not fatal.
     { ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-v4-pro", priority: 101 }) },
     // The old OpenCode curation slug differs from the checked-in public slug,
@@ -297,6 +369,27 @@ test("registry merges valid user models and skips collisions", async () => {
   const registry = await import("../src/model-registry.mjs");
   const slugs = registry.MODELS.map((model) => model.slug);
   assert.ok(slugs.includes("deepseek/deepseek-user-test"));
+  assert.ok(slugs.includes("openwebui/bedrock-claude-5-opus-responses-registry"));
+  assert.equal(slugs.includes("openwebui/bedrock-claude-5-opus-unknown-protocol"), false);
+  assert.equal(slugs.includes("deepseek/deepseek-openwebui-metadata-leak"), false);
+  assert.equal(slugs.includes("openwebui/bedrock-claude-5-opus-bad-reasoning-controls"), false);
+  assert.equal(slugs.includes("deepseek/deepseek-reasoning-controls-leak"), false);
+  assert.ok(registry.USER_MODEL_WARNINGS.some((warning) => (
+    warning.includes("openwebui/bedrock-claude-5-opus-unknown-protocol") &&
+    /requires an explicit chat, messages, or responses protocol/.test(warning)
+  )));
+  assert.ok(registry.USER_MODEL_WARNINGS.some((warning) => (
+    warning.includes("deepseek/deepseek-openwebui-metadata-leak") &&
+    /has Open WebUI protocol metadata outside Open WebUI/.test(warning)
+  )));
+  assert.ok(registry.USER_MODEL_WARNINGS.some((warning) => (
+    warning.includes("openwebui/bedrock-claude-5-opus-bad-reasoning-controls") &&
+    /has an invalid reasoning-controls setting/.test(warning)
+  )));
+  assert.ok(registry.USER_MODEL_WARNINGS.some((warning) => (
+    warning.includes("deepseek/deepseek-reasoning-controls-leak") &&
+    /has Open WebUI compatibility metadata outside Open WebUI/.test(warning)
+  )));
   assert.equal(slugs.includes("openrouter/vendor/embedding-only-listed"), false);
   assert.equal(slugs.includes("openrouter/vendor/embedding-only"), true);
   assert.equal(slugs.includes("openrouter/vendor/bad-endpoint"), false);

@@ -25,6 +25,7 @@ const token = "header.eyJleHAiOjQxMDI0NDQ4MDB9.signature";
 
 test("Open WebUI origins are canonical, prefix-safe, and reject unsafe forms", () => {
   assert.equal(canonicalOpenWebUiBase("https://chat.example.com/api/chat/completions"), "https://chat.example.com");
+  assert.equal(canonicalOpenWebUiBase("https://chat.example.com/openai/responses"), "https://chat.example.com");
   assert.equal(canonicalOpenWebUiBase("https://chat.example.com/webui/api"), "https://chat.example.com/webui");
   assert.equal(openWebUiApiUrl("https://chat.example.com/webui", "api/models").toString(), "https://chat.example.com/webui/api/models");
   assert.equal(canonicalOpenWebUiBase("http://127.0.0.1:3000"), "http://127.0.0.1:3000");

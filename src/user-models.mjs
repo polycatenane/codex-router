@@ -131,6 +131,7 @@ export function userModelEntry({
   metadata,
   openWebUiProtocol,
   openWebUiWebSearchOptions,
+  openWebUiReasoningControls,
   openWebUiToolNameLimit,
 }) {
   const identity = userModelIdentity({ providerId, upstreamId, metadata });
@@ -153,6 +154,7 @@ export function userModelEntry({
   if (requestProfile) entry.requestProfile = requestProfile;
   if (openWebUiProtocol) entry.openWebUiProtocol = openWebUiProtocol;
   if (openWebUiWebSearchOptions) entry.openWebUiWebSearchOptions = openWebUiWebSearchOptions;
+  if (openWebUiReasoningControls) entry.openWebUiReasoningControls = openWebUiReasoningControls;
   if (openWebUiToolNameLimit) entry.openWebUiToolNameLimit = openWebUiToolNameLimit;
   return entry;
 }

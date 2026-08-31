@@ -614,6 +614,42 @@ function openWebUiBedrockFixture() {
   return { directory, userModels, model: "openwebui/bedrock-tool-choice-fixture" };
 }
 
+// A responses-protocol Open WebUI model's route never crosses LiteLLM's
+// Responses -> Chat Completions bridge, so unlike the Bedrock (messages)
+// fixture above, its namespace tools default to Codex's native shape. The
+// 64-character opt-in is deliberately omitted here and passed explicitly by
+// callers that need it, so the same fixture generator proves both defaults.
+function openWebUiResponsesFixture({ toolNameLimit } = {}) {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "openwebui-responses-tool-choice-"));
+  const userModels = path.join(directory, "user-models.json");
+  writeFileSync(
+    userModels,
+    JSON.stringify({
+      version: 1,
+      models: [{
+        slug: "openwebui/responses-tool-choice-fixture",
+        gatewayModel: "openwebui--cmVzcG9uc2VzLXRvb2wtY2hvaWNlLWZpeHR1cmU",
+        upstreamModel: "responses-tool-choice-fixture",
+        provider: "openwebui",
+        listed: true,
+        displayName: "Open WebUI Responses tool-choice fixture",
+        description: "Local routing test fixture.",
+        priority: 500,
+        defaultEffort: "high",
+        reasoningLevels: [{ effort: "high", description: "Adaptive reasoning" }],
+        contextWindow: 131072,
+        autoCompact: 111411,
+        inputModalities: ["text"],
+        compHash: "openwebui-responses-tool-choice-fixture-v1",
+        openWebUiProtocol: "responses",
+        ...(toolNameLimit === undefined ? {} : { openWebUiToolNameLimit: toolNameLimit }),
+      }],
+    }),
+    "utf8",
+  );
+  return { directory, userModels, model: "openwebui/responses-tool-choice-fixture" };
+}
+
 function openWebUiForcedNamespacedToolPayload(stream = false, model) {
   const namespace = "mcp__codex_apps__codex_document_control";
   const name = "execute_document_command";
@@ -1041,6 +1077,61 @@ test("Open WebUI Bedrock routes a forced namespaced tool choice to its alias", a
       "mcp__codex_apps__codex_document_control__execute_document_command",
     );
     assert.ok(outgoing.tools.some((tool) => tool.name === forcedName));
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("an Open WebUI responses model keeps namespace tools native and history untouched", async () => {
+  // Unlike every chat-completions route, a responses-protocol Open WebUI
+  // model never crosses LiteLLM's Chat bridge, so there is no translation
+  // boundary to flatten namespace tools for or to rewrite stored calls for.
+  const fixture = openWebUiResponsesFixture();
+  try {
+    const result = await scenario(false, {
+      model: fixture.model,
+      requestPayload: routedRequestPayload,
+      jsonBody: () => ({ id: "openwebui-responses-native", output: [] }),
+      routerEnv: { MODEL_ROUTER_USER_MODELS: fixture.userModels },
+    });
+    assert.equal(result.gatewayBodies.length, 1);
+    const outgoing = result.gatewayBodies[0];
+    assert.ok(
+      outgoing.tools.some((tool) => tool?.type === "namespace" && tool.name === "codex_app"),
+      "namespace tools are sent to the upstream exactly as Codex built them",
+    );
+    assert.ok(
+      outgoing.tools.some((tool) => tool?.type === "tool_search"),
+      "the native tool_search control is not bridged into a plain function",
+    );
+    const historyCall = outgoing.input.find((item) => item?.type === "function_call");
+    assert.equal(historyCall?.name, "create_thread");
+    assert.equal(historyCall?.namespace, "codex_app");
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("an explicit 64-character opt-in flattens an Open WebUI responses model's tools", async () => {
+  const fixture = openWebUiResponsesFixture({ toolNameLimit: 64 });
+  try {
+    const result = await scenario(false, {
+      model: fixture.model,
+      requestPayload: openWebUiForcedNamespacedToolPayload,
+      jsonBody: () => ({ id: "openwebui-responses-flattened", output: [] }),
+      routerEnv: { MODEL_ROUTER_USER_MODELS: fixture.userModels },
+    });
+    assert.equal(result.gatewayBodies.length, 1);
+    const outgoing = result.gatewayBodies[0];
+    const forcedName = outgoing.tool_choice.name;
+    assert.equal(outgoing.tool_choice.namespace, undefined);
+    assert.ok(forcedName.length <= 64);
+    assert.notEqual(
+      forcedName,
+      "mcp__codex_apps__codex_document_control__execute_document_command",
+    );
+    assert.ok(outgoing.tools.some((tool) => tool.name === forcedName));
+    assert.equal(outgoing.tools.some((tool) => tool?.type === "namespace"), false);
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true });
   }

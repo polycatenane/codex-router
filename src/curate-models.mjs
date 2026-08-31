@@ -78,6 +78,10 @@ const openWebUiWebSearchOptionsOption = (() => {
   const index = process.argv.indexOf("--web-search-options");
   return index === -1 ? undefined : process.argv[index + 1];
 })();
+const openWebUiReasoningControlsOption = (() => {
+  const index = process.argv.indexOf("--reasoning-controls");
+  return index === -1 ? undefined : process.argv[index + 1];
+})();
 const openWebUiToolNameLimitOption = (() => {
   const index = process.argv.indexOf("--tool-name-limit");
   return index === -1 ? undefined : process.argv[index + 1];
@@ -95,6 +99,19 @@ const EFFORT_DESCRIPTIONS = {
   xhigh: "Extended reasoning",
   max: "Maximum reasoning",
 };
+
+// The ladder a `--reasoning-controls drop` entry stores in place of the
+// default "Adaptive reasoning" one: a single level with no adjustable effort,
+// the same shape ClinePass's checked-in routes use for a model whose
+// requestProfile strips reasoning outright (config/clinepass/*.json). The
+// picker must not advertise a High/Adaptive-reasoning ladder for a model that
+// silently ignores every reasoning control it is sent.
+const NON_REASONING_LADDER = Object.freeze({
+  defaultEffort: "high",
+  reasoningLevels: Object.freeze([
+    Object.freeze({ effort: "high", description: "Default model behavior" }),
+  ]),
+});
 
 // Request profiles a curated model may opt into. The vendor profiles in
 // `src/api-forwarder.mjs` translate one upstream's parameter surface and are
@@ -140,10 +157,12 @@ function usage() {
     "Usage: curate-models.mjs PROVIDER [--models id1,id2 | interactive] " +
       "[--free-only] [--remove id1,id2] [--refresh] [--apply|--no-apply] " +
       "[--efforts minimal,low,medium,high,xhigh] " +
-      "[--protocol chat|messages] " +
+      "[--protocol chat|messages|responses] " +
       "[--web-search-options forward|drop] [--tool-name-limit 64] " +
-      "[--configure-model RAW_MODEL_ID --protocol chat|messages] " +
+      "[--reasoning-controls forward|drop] " +
+      "[--configure-model RAW_MODEL_ID --protocol chat|messages|responses] " +
       "[--configure-model RAW_MODEL_ID --web-search-options forward|drop] " +
+      "[--configure-model RAW_MODEL_ID --reasoning-controls forward|drop] " +
       "[--configure-model RAW_MODEL_ID --tool-name-limit 64|none] " +
       `[--request-profile ${Object.keys(REQUEST_PROFILE_DESCRIPTIONS).join("|")}]`,
   );
@@ -353,8 +372,8 @@ const flagRequestProfile = (() => {
 const openWebUiProtocol = (() => {
   if (openWebUiProtocolOption === undefined) return undefined;
   const protocol = String(openWebUiProtocolOption).trim().toLowerCase();
-  if (!["chat", "messages"].includes(protocol)) {
-    console.error("--protocol must be chat or messages.");
+  if (!["chat", "messages", "responses"].includes(protocol)) {
+    console.error("--protocol must be chat, messages, or responses.");
     process.exit(2);
   }
   return protocol;
@@ -364,6 +383,15 @@ const openWebUiWebSearchOptions = (() => {
   const value = String(openWebUiWebSearchOptionsOption).trim().toLowerCase();
   if (!['forward', 'drop'].includes(value)) {
     console.error("--web-search-options must be forward or drop.");
+    process.exit(2);
+  }
+  return value;
+})();
+const openWebUiReasoningControls = (() => {
+  if (openWebUiReasoningControlsOption === undefined) return undefined;
+  const value = String(openWebUiReasoningControlsOption).trim().toLowerCase();
+  if (!['forward', 'drop'].includes(value)) {
+    console.error("--reasoning-controls must be forward or drop.");
     process.exit(2);
   }
   return value;
@@ -382,6 +410,7 @@ const openWebUiToolNameLimit = (() => {
 export function updateOpenWebUiCompatibility(model, {
   protocol,
   webSearchOptions,
+  reasoningControls,
   toolNameLimit,
   toolNameLimitSpecified,
 }) {
@@ -391,6 +420,13 @@ export function updateOpenWebUiCompatibility(model, {
   }
   if (webSearchOptions !== undefined) {
     next = { ...next, openWebUiWebSearchOptions: webSearchOptions };
+  }
+  if (reasoningControls !== undefined) {
+    next = { ...next, openWebUiReasoningControls: reasoningControls };
+    // The repair form of curation: a model just told to drop reasoning
+    // controls must stop advertising a ladder it cannot honor, the same
+    // upgrade metadataFor applies when the model is curated fresh.
+    if (reasoningControls === "drop") next = { ...next, ...NON_REASONING_LADDER };
   }
   if (toolNameLimitSpecified) {
     if (toolNameLimit === undefined) {
@@ -459,9 +495,12 @@ async function main() {
     if (
       openWebUiProtocol === undefined &&
       openWebUiWebSearchOptions === undefined &&
+      openWebUiReasoningControls === undefined &&
       openWebUiToolNameLimitOption === undefined
     ) {
-      throw new Error("--configure-model requires --protocol, --web-search-options, or --tool-name-limit.");
+      throw new Error(
+        "--configure-model requires --protocol, --web-search-options, --reasoning-controls, or --tool-name-limit.",
+      );
     }
     const incompatible = [
       ["--models", modelsOption],
@@ -484,6 +523,7 @@ async function main() {
       ? updateOpenWebUiCompatibility(model, {
           protocol: openWebUiProtocol,
           webSearchOptions: openWebUiWebSearchOptions,
+          reasoningControls: openWebUiReasoningControls,
           toolNameLimit: openWebUiToolNameLimit,
           toolNameLimitSpecified: openWebUiToolNameLimitOption !== undefined,
         })
@@ -525,7 +565,7 @@ async function main() {
     throw new Error("--models requires at least one model id.");
   }
   if (provider.authProfile === "openwebui-session" && modelsOption !== undefined && !openWebUiProtocol) {
-    throw new Error("Open WebUI scripted curation requires --protocol chat or --protocol messages.");
+    throw new Error("Open WebUI scripted curation requires --protocol chat, messages, or responses.");
   }
   if (
     provider.authProfile === "openwebui-session" &&
@@ -612,7 +652,17 @@ async function main() {
   // Existing curated entries are never touched.
   const interactive = interactiveSelection && Boolean(process.stdin.isTTY);
 
-  const metadataFor = (id) => {
+  const reasoningControlsFor = (id) => {
+    if (provider.authProfile !== "openwebui-session") return undefined;
+    if (openWebUiReasoningControls) return openWebUiReasoningControls;
+    // Unlike protocol and web-search-options, an absent value is a safe
+    // default (forward) rather than an unanswered question, so scripted
+    // curation is not forced to name it.
+    if (!interactive) return undefined;
+    return confirm(`  Forward reasoning controls for ${id}?`, true) ? "forward" : "drop";
+  };
+
+  const metadataFor = (id, { reasoningControls } = {}) => {
     const metadata = {
       ...(flagEfforts || {}),
       ...(discovery.free?.includes(id) ? { isFree: true } : {}),
@@ -631,6 +681,13 @@ async function main() {
     const documentedEfforts = curatedModelReasoningLevels(providerId, id);
     if (!flagEfforts && documentedEfforts) {
       Object.assign(metadata, parseEfforts(documentedEfforts.join(",")) || {});
+    }
+    // The router cannot advertise a reasoning ladder it has just been told to
+    // strip before every request: an explicit --efforts still overrides,
+    // matching how curation already lets the operator override inferred
+    // sizing and levels.
+    if (!flagEfforts && reasoningControls === "drop") {
+      Object.assign(metadata, NON_REASONING_LADDER);
     }
     // A documented window or effort ladder is not a conservative default, and
     // this repository records where such a value came from in the entry's own
@@ -670,7 +727,7 @@ async function main() {
     if (confirm(`  Does ${id} accept image input?`)) {
       metadata.inputModalities = ["text", "image"];
     }
-    if (!flagEfforts) {
+    if (!flagEfforts && reasoningControls !== "drop") {
       const ladder = metadata.reasoningLevels?.map((level) => level.effort).join(",") || "high";
       const rawEfforts = promptLine(
         "  Reasoning efforts, comma-separated from " +
@@ -707,10 +764,10 @@ async function main() {
   const protocolFor = (id) => {
     if (provider.authProfile !== "openwebui-session") return undefined;
     if (openWebUiProtocol) return openWebUiProtocol;
-    if (!interactive) throw new Error("Open WebUI curation requires --protocol chat or messages.");
-    const answer = promptLine(`  Protocol for ${id}: chat or messages`).trim().toLowerCase();
-    if (!["chat", "messages"].includes(answer)) {
-      throw new Error("Open WebUI protocol must be chat or messages.");
+    if (!interactive) throw new Error("Open WebUI curation requires --protocol chat, messages, or responses.");
+    const answer = promptLine(`  Protocol for ${id}: chat, messages, or responses`).trim().toLowerCase();
+    if (!["chat", "messages", "responses"].includes(answer)) {
+      throw new Error("Open WebUI protocol must be chat, messages, or responses.");
     }
     return answer;
   };
@@ -744,9 +801,12 @@ async function main() {
   const nextMine = [
     ...surviving,
     ...additions.map((id, index) => {
+      // Reasoning controls are decided before metadata so a "drop" answer
+      // can skip the now-pointless reasoning-efforts prompt inside it.
+      const reasoningControls = reasoningControlsFor(id);
       // Ask for metadata before the profile so interactive prompts stay under
       // one model heading and in the order they are printed.
-      const metadata = metadataFor(id);
+      const metadata = metadataFor(id, { reasoningControls });
       const routedProviderId = curatedModelProviderId(providerId, id);
       return userModelEntry({
         providerId: routedProviderId,
@@ -754,6 +814,7 @@ async function main() {
         requestProfile: requestProfileFor(id),
         openWebUiProtocol: protocolFor(id),
         openWebUiWebSearchOptions: webSearchOptionsFor(id),
+        openWebUiReasoningControls: reasoningControls,
         openWebUiToolNameLimit: toolNameLimitFor(id),
         priority: 100 + mine.length + index,
         metadata,

@@ -41,7 +41,7 @@ export function canonicalOpenWebUiBase(value, { allowInsecureHttp = false } = {}
     throw new Error("Open WebUI requires HTTPS outside loopback; pass --allow-insecure-http only for unsafe development use.");
   }
   let pathname = url.pathname.replace(/\/+$/, "") || "/";
-  for (const suffix of ["/api/v1/messages", "/api/chat/completions", "/api/models", "/api"]) {
+  for (const suffix of ["/api/v1/messages", "/api/chat/completions", "/openai/responses", "/api/models", "/api"]) {
     if (pathname === suffix || pathname.endsWith(suffix)) {
       pathname = pathname.slice(0, -suffix.length) || "/";
       break;

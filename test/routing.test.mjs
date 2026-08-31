@@ -6101,18 +6101,36 @@ function curatedOpenWebUiModel(stateDir, baseUrl, compatibility = {}) {
 }
 
 test("API forwarder honors an Open WebUI model's web-search-options setting", async () => {
-  for (const { protocol, route, apiPath, responseBody } of [
+  for (const { protocol, route, apiPath, responseBody, body } of [
     {
       protocol: "chat",
       route: "/v1/chat/completions",
       apiPath: "/api/chat/completions",
       responseBody: { choices: [] },
+      body: {
+        web_search_options: { search_context_size: "medium" },
+        messages: [{ role: "user", content: "test" }],
+      },
     },
     {
       protocol: "messages",
       route: "/v1/messages",
       apiPath: "/api/v1/messages",
       responseBody: { id: "msg_test", type: "message", content: [] },
+      body: {
+        web_search_options: { search_context_size: "medium" },
+        messages: [{ role: "user", content: "test" }],
+      },
+    },
+    {
+      protocol: "responses",
+      route: "/v1/responses",
+      apiPath: "/openai/responses",
+      responseBody: { id: "resp_test", object: "response", output: [] },
+      body: {
+        web_search_options: { search_context_size: "medium" },
+        input: "test",
+      },
     },
   ]) {
     const upstreamRequests = [];
@@ -6149,21 +6167,160 @@ test("API forwarder honors an Open WebUI model's web-search-options setting", as
           Authorization: `Bearer ${INTERNAL_KEY}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          model: curated.gatewayModel,
-          web_search_options: { search_context_size: "medium" },
-          messages: [{ role: "user", content: "test" }],
-        }),
+        body: JSON.stringify({ model: curated.gatewayModel, ...body }),
       });
       assert.equal(response.status, 200, forwarder.testErrors());
       assert.equal(upstreamRequests.length, 1);
       assert.equal(upstreamRequests[0].web_search_options, undefined);
+      assert.equal(upstreamRequests[0].model, "test-model");
+
+      // A route serving a different protocol than the curated model's must be
+      // refused, and each of the other two routes must not accept this one's.
+      for (const otherRoute of ["/v1/chat/completions", "/v1/messages", "/v1/responses"]) {
+        if (otherRoute === route) continue;
+        const refused = await fetch(`http://127.0.0.1:${forwarderPort}${otherRoute}`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${INTERNAL_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ model: curated.gatewayModel, ...body }),
+        });
+        assert.equal(refused.status, 400, `${otherRoute} unexpectedly accepted a ${protocol} model`);
+      }
+      assert.equal(upstreamRequests.length, 1);
+    } finally {
+      await stopChild(forwarder);
+      await closeServer(upstream.server);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("API forwarder honors an Open WebUI model's reasoning-controls setting", async () => {
+  for (const { protocol, route, apiPath, responseBody, body } of [
+    {
+      protocol: "chat",
+      route: "/v1/chat/completions",
+      apiPath: "/api/chat/completions",
+      responseBody: { choices: [] },
+      body: {
+        reasoning_effort: "low",
+        messages: [{ role: "user", content: "test" }],
+      },
+    },
+    {
+      protocol: "responses",
+      route: "/v1/responses",
+      apiPath: "/openai/responses",
+      responseBody: { id: "resp_test", object: "response", output: [] },
+      body: {
+        reasoning: { effort: "low" },
+        input: "test",
+      },
+    },
+  ]) {
+    const upstreamRequests = [];
+    const upstream = await mockServer(async (request, response) => {
+      if (request.url === "/api/models") {
+        json(response, 200, { object: "list", data: [] });
+        return;
+      }
+      assert.equal(request.url, apiPath);
+      upstreamRequests.push(await bodyJson(request));
+      json(response, 200, responseBody);
+    });
+    const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-openwebui-reasoning-"));
+    const curated = curatedOpenWebUiModel(
+      stateDir,
+      `http://127.0.0.1:${upstream.port}`,
+      { openWebUiProtocol: protocol, openWebUiReasoningControls: "drop" },
+    );
+    const forwarderPort = await openPort();
+    const forwarder = run("api-forwarder.mjs", {
+      CODEX_ROUTER_API_PORT: String(forwarderPort),
+      MODEL_ROUTER_STATE_DIR: stateDir,
+      MODEL_ROUTER_USER_MODELS: curated.file,
+      CODEX_ROUTER_QUIET: "1",
+    });
+
+    try {
+      await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+      });
+      const response = await fetch(`http://127.0.0.1:${forwarderPort}${route}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model: curated.gatewayModel, ...body }),
+      });
+      assert.equal(response.status, 200, forwarder.testErrors());
+      assert.equal(upstreamRequests.length, 1);
+      // Both spellings are stripped regardless of which one this protocol
+      // would otherwise send: each route rejects the spelling it treats as
+      // real, and neither ever delivers reasoning to this account.
+      assert.equal("reasoning" in upstreamRequests[0], false);
+      assert.equal("reasoning_effort" in upstreamRequests[0], false);
       assert.equal(upstreamRequests[0].model, "test-model");
     } finally {
       await stopChild(forwarder);
       await closeServer(upstream.server);
       rmSync(stateDir, { recursive: true, force: true });
     }
+  }
+});
+
+test("API forwarder forwards reasoning controls for an Open WebUI model with no drop flag", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    if (request.url === "/api/models") {
+      json(response, 200, { object: "list", data: [] });
+      return;
+    }
+    upstreamRequests.push(await bodyJson(request));
+    json(response, 200, { choices: [] });
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-openwebui-reasoning-forward-"));
+  const curated = curatedOpenWebUiModel(stateDir, `http://127.0.0.1:${upstream.port}`);
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: curated.gatewayModel,
+        reasoning_effort: "high",
+        tools: [{ type: "function", function: { name: "lookup", parameters: { type: "object" } } }],
+        max_output_tokens: 512,
+        messages: [{ role: "user", content: "test" }],
+      }),
+    });
+    assert.equal(response.status, 200, forwarder.testErrors());
+    assert.equal(upstreamRequests[0].reasoning_effort, "high");
+    assert.equal(upstreamRequests[0].max_output_tokens, 512);
+    assert.deepEqual(
+      upstreamRequests[0].tools,
+      [{ type: "function", function: { name: "lookup", parameters: { type: "object" } } }],
+    );
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(stateDir, { recursive: true, force: true });
   }
 });
 
@@ -6306,6 +6463,186 @@ test("Open WebUI compaction keeps tool evidence out of the provider tool protoco
     await stopChild(router);
     await closeServer(gateway.server);
     rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("Open WebUI compaction leaves historical tool items untouched on a responses model", async () => {
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, {
+      id: "resp_openwebui_responses_compaction",
+      object: "response",
+      output: [{
+        type: "message",
+        content: [{ type: "output_text", text: "compact summary" }],
+      }],
+    });
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-openwebui-responses-compaction-"));
+  const curated = curatedOpenWebUiModel(
+    stateDir,
+    `http://127.0.0.1:${gateway.port}`,
+    { openWebUiProtocol: "responses" },
+  );
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const headers = {
+    Authorization: `Bearer ${CALLER_KEY}`,
+    "Content-Type": "application/json",
+  };
+  const input = [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "capture the repository state" }],
+    },
+    {
+      type: "function_call",
+      call_id: "call_exec",
+      name: "exec_command",
+      arguments: '{"cmd":"git status"}',
+    },
+    {
+      type: "function_call_output",
+      call_id: "call_exec",
+      output: '{"exit_code":0,"output":"clean"}',
+    },
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses/compact`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "openwebui/test-model", input }),
+    });
+    assert.equal(response.status, 200, router.testErrors());
+    assert.equal(gatewayRequests.length, 1);
+    const [request] = gatewayRequests;
+    assert.deepEqual(request.tools, []);
+    // Unlike the chat/messages compaction test, a responses model's turn
+    // never crosses LiteLLM's Responses -> Chat bridge, so its historical
+    // tool items survive exactly as sent.
+    assert.ok(request.input.some((item) => item?.type === "function_call"));
+    assert.ok(request.input.some((item) => item?.type === "function_call_output"));
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("API forwarder preserves Open WebUI Responses completion after provider-owned event shapes", async () => {
+  const upstreamStream = [
+    'data: {"type":"response.created","response":{"id":"resp_openwebui_passthrough","status":"in_progress","output":[]}}\n\n',
+    'data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_openwebui_passthrough","type":"message","role":"assistant","content":[]}}\n\n',
+    'data: {"type":"response.output_text.delta","item_id":"msg_openwebui_passthrough","output_index":1,"content_index":0,"delta":"done"}\n\n',
+    'data: {"type":"response.output_item.done","output_index":1,"item":{"id":"msg_openwebui_passthrough","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done","annotations":[]}]}}\n\n',
+    'data: {"type":"response.completed","response":{"id":"resp_openwebui_passthrough","status":"completed","output":[{"id":"msg_openwebui_passthrough","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done","annotations":[]}]}]}}\n\n',
+    "data: [DONE]\n\n",
+  ].join("");
+  const upstream = await mockServer(async (request, response) => {
+    if (request.url === "/api/models") {
+      json(response, 200, { object: "list", data: [] });
+      return;
+    }
+    assert.equal(request.url, "/openai/responses");
+    await bodyJson(request);
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(upstreamStream);
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-openwebui-responses-passthrough-"));
+  const curated = curatedOpenWebUiModel(
+    stateDir,
+    `http://127.0.0.1:${upstream.port}`,
+    { openWebUiProtocol: "responses" },
+  );
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: curated.gatewayModel, input: "finish", stream: true }),
+    });
+    const body = await response.text();
+    assert.equal(response.status, 200, forwarder.testErrors());
+    assert.equal(body, upstreamStream);
+    assert.match(body, /"type":"response.completed"/);
+    assert.doesNotMatch(body, /invalid_responses_stream/);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("litellm-config emits a Responses deployment for a responses-protocol Open WebUI model", () => {
+  for (const { protocol, expectedModel, expectUseChatCompletions } of [
+    {
+      protocol: "responses",
+      expectedModel: "openai/responses/openwebui--dGVzdC1tb2RlbA",
+      expectUseChatCompletions: false,
+    },
+    { protocol: "chat", expectedModel: "openai/openwebui--dGVzdC1tb2RlbA", expectUseChatCompletions: true },
+    {
+      protocol: "messages",
+      expectedModel: "anthropic/openwebui--dGVzdC1tb2RlbA",
+      expectUseChatCompletions: true,
+    },
+  ]) {
+    const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-openwebui-litellm-config-"));
+    const curated = curatedOpenWebUiModel(
+      stateDir,
+      "https://chat.example.com",
+      { openWebUiProtocol: protocol },
+    );
+    try {
+      const result = execFileSync(
+        process.execPath,
+        [
+          "-e",
+          "const { renderLiteLlmConfig } = await import('./src/litellm-config.mjs');" +
+            "process.stdout.write(renderLiteLlmConfig());",
+        ],
+        {
+          cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
+          encoding: "utf8",
+          env: { ...process.env, MODEL_ROUTER_STATE_DIR: stateDir, MODEL_ROUTER_USER_MODELS: curated.file },
+        },
+      );
+      const start = result.indexOf(`model_name: "${curated.gatewayModel}"`);
+      assert.ok(start >= 0, `missing LiteLLM route for ${curated.gatewayModel} (${protocol})`);
+      const next = result.indexOf("model_name:", start + 1);
+      const block = result.slice(start, next === -1 ? undefined : next);
+      assert.match(block, new RegExp(`model: "${expectedModel.replace(/\//g, "\\/")}"`));
+      if (expectUseChatCompletions) {
+        assert.match(block, /use_chat_completions_api: true/);
+      } else {
+        assert.doesNotMatch(block, /use_chat_completions_api/);
+      }
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   }
 });
 

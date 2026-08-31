@@ -103,6 +103,290 @@ test("Open WebUI compatibility updates alter only the requested model settings",
   });
 });
 
+test("Open WebUI compatibility updates can set and clear the responses protocol", () => {
+  const original = {
+    provider: "openwebui",
+    upstreamModel: "bedrock-claude-5-opus",
+    contextWindow: 200000,
+  };
+  const promoted = updateOpenWebUiCompatibility(original, {
+    protocol: "responses",
+    toolNameLimitSpecified: false,
+  });
+  assert.deepEqual(promoted, {
+    ...original,
+    openWebUiProtocol: "responses",
+  });
+});
+
+test("Open WebUI compatibility repair drops reasoning controls and the reasoning ladder", () => {
+  const original = {
+    provider: "openwebui",
+    upstreamModel: "openai.gpt-5.6-sol",
+    openWebUiProtocol: "responses",
+    defaultEffort: "high",
+    reasoningLevels: [
+      { effort: "high", description: "Adaptive reasoning" },
+    ],
+  };
+  const repaired = updateOpenWebUiCompatibility(original, {
+    reasoningControls: "drop",
+    toolNameLimitSpecified: false,
+  });
+  assert.equal(repaired.openWebUiReasoningControls, "drop");
+  assert.equal(repaired.defaultEffort, "high");
+  assert.deepEqual(repaired.reasoningLevels, [{ effort: "high", description: "Default model behavior" }]);
+});
+
+test("Open WebUI compatibility repair to forward leaves an existing ladder alone", () => {
+  const original = {
+    provider: "openwebui",
+    upstreamModel: "bedrock-claude-5-opus",
+    openWebUiProtocol: "chat",
+    defaultEffort: "medium",
+    reasoningLevels: [
+      { effort: "low", description: "Quick reasoning" },
+      { effort: "medium", description: "Balanced reasoning" },
+    ],
+  };
+  const repaired = updateOpenWebUiCompatibility(original, {
+    reasoningControls: "forward",
+    toolNameLimitSpecified: false,
+  });
+  assert.equal(repaired.openWebUiReasoningControls, "forward");
+  assert.equal(repaired.defaultEffort, "medium");
+  assert.deepEqual(repaired.reasoningLevels, original.reasoningLevels);
+});
+
+test("scripted Open WebUI curation stores the responses protocol", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "curate-models-openwebui-responses-"));
+  const fixture = path.join(dir, "models.json");
+  writeFileSync(fixture, JSON.stringify({ data: [{ id: "company/coding-responses" }] }));
+  const file = path.join(dir, "user-models.json");
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(root, "src", "curate-models.mjs"),
+        "openwebui",
+        "--models",
+        "company/coding-responses",
+        "--fixture",
+        fixture,
+        "--protocol",
+        "responses",
+        "--web-search-options",
+        "drop",
+        "--no-apply",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, MODEL_ROUTER_STATE_DIR: dir, MODEL_ROUTER_USER_MODELS: file },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const stored = JSON.parse(readFileSync(file, "utf8"));
+    const model = stored.models.find((entry) => entry.upstreamModel === "company/coding-responses");
+    assert.equal(model.openWebUiProtocol, "responses");
+    assert.equal(model.openWebUiWebSearchOptions, "drop");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("--configure-model sets the responses protocol on an already-curated Open WebUI model", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "curate-models-openwebui-configure-responses-"));
+  const file = path.join(dir, "user-models.json");
+  const existing = userModelEntry({
+    providerId: "openwebui",
+    upstreamId: "bedrock-claude-5-opus",
+    priority: 100,
+    openWebUiProtocol: "chat",
+  });
+  writeFileSync(file, JSON.stringify({ version: 1, models: [existing] }));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(root, "src", "curate-models.mjs"),
+        "openwebui",
+        "--configure-model",
+        "bedrock-claude-5-opus",
+        "--protocol",
+        "responses",
+        "--no-apply",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, MODEL_ROUTER_STATE_DIR: dir, MODEL_ROUTER_USER_MODELS: file },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const stored = JSON.parse(readFileSync(file, "utf8"));
+    const model = stored.models.find((entry) => entry.upstreamModel === "bedrock-claude-5-opus");
+    assert.equal(model.openWebUiProtocol, "responses");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scripted Open WebUI curation stores a dropped reasoning-controls flag and a non-reasoning ladder", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "curate-models-openwebui-reasoning-drop-"));
+  const fixture = path.join(dir, "models.json");
+  writeFileSync(fixture, JSON.stringify({ data: [{ id: "openai.gpt-5.6-sol" }] }));
+  const file = path.join(dir, "user-models.json");
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(root, "src", "curate-models.mjs"),
+        "openwebui",
+        "--models",
+        "openai.gpt-5.6-sol",
+        "--fixture",
+        fixture,
+        "--protocol",
+        "responses",
+        "--web-search-options",
+        "forward",
+        "--reasoning-controls",
+        "drop",
+        "--no-apply",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, MODEL_ROUTER_STATE_DIR: dir, MODEL_ROUTER_USER_MODELS: file },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const stored = JSON.parse(readFileSync(file, "utf8"));
+    const model = stored.models.find((entry) => entry.upstreamModel === "openai.gpt-5.6-sol");
+    assert.equal(model.openWebUiReasoningControls, "drop");
+    assert.deepEqual(model.reasoningLevels, [{ effort: "high", description: "Default model behavior" }]);
+    assert.equal(model.defaultEffort, "high");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("--efforts still overrides the non-reasoning ladder for a dropped-controls model", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "curate-models-openwebui-reasoning-drop-efforts-"));
+  const fixture = path.join(dir, "models.json");
+  writeFileSync(fixture, JSON.stringify({ data: [{ id: "openai.gpt-5.6-sol" }] }));
+  const file = path.join(dir, "user-models.json");
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(root, "src", "curate-models.mjs"),
+        "openwebui",
+        "--models",
+        "openai.gpt-5.6-sol",
+        "--fixture",
+        fixture,
+        "--protocol",
+        "responses",
+        "--web-search-options",
+        "forward",
+        "--reasoning-controls",
+        "drop",
+        "--efforts",
+        "low,high",
+        "--no-apply",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, MODEL_ROUTER_STATE_DIR: dir, MODEL_ROUTER_USER_MODELS: file },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const stored = JSON.parse(readFileSync(file, "utf8"));
+    const model = stored.models.find((entry) => entry.upstreamModel === "openai.gpt-5.6-sol");
+    assert.equal(model.openWebUiReasoningControls, "drop");
+    assert.deepEqual(
+      model.reasoningLevels.map((level) => level.effort),
+      ["low", "high"],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("--configure-model --reasoning-controls drop repairs an already-curated Open WebUI model", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "curate-models-openwebui-configure-reasoning-"));
+  const file = path.join(dir, "user-models.json");
+  const existing = userModelEntry({
+    providerId: "openwebui",
+    upstreamId: "openai.gpt-5.6-sol",
+    priority: 100,
+    openWebUiProtocol: "responses",
+  });
+  writeFileSync(file, JSON.stringify({ version: 1, models: [existing] }));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(root, "src", "curate-models.mjs"),
+        "openwebui",
+        "--configure-model",
+        "openai.gpt-5.6-sol",
+        "--reasoning-controls",
+        "drop",
+        "--no-apply",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, MODEL_ROUTER_STATE_DIR: dir, MODEL_ROUTER_USER_MODELS: file },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const stored = JSON.parse(readFileSync(file, "utf8"));
+    const model = stored.models.find((entry) => entry.upstreamModel === "openai.gpt-5.6-sol");
+    assert.equal(model.openWebUiReasoningControls, "drop");
+    assert.deepEqual(model.reasoningLevels, [{ effort: "high", description: "Default model behavior" }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scripted Open WebUI curation without a protocol still fails", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "curate-models-openwebui-no-protocol-"));
+  const fixture = path.join(dir, "models.json");
+  writeFileSync(fixture, JSON.stringify({ data: [{ id: "company/coding" }] }));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(root, "src", "curate-models.mjs"),
+        "openwebui",
+        "--models",
+        "company/coding",
+        "--fixture",
+        fixture,
+        "--no-apply",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          MODEL_ROUTER_STATE_DIR: dir,
+          MODEL_ROUTER_USER_MODELS: path.join(dir, "user-models.json"),
+        },
+      },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Open WebUI scripted curation requires --protocol chat, messages, or responses\./);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("OpenCode curation keeps each endpoint family on its documented protocol", () => {
   assert.deepEqual(curationProviderIds("opencode-free"), [
     "opencode-free",
