@@ -526,6 +526,20 @@ a connection you have confirmed accepts Responses payloads. A model curated
 this way must still be listed in the signed-in user's workspace: a non-admin
 session gets HTTP 403 from Open WebUI for a model it is not otherwise
 authorized to use, exactly as it would for the chat pipeline.
+
+Compaction strips historical tool items -- `function_call`,
+`function_call_output`, and their custom, shell, computer, and search
+equivalents -- from every Open WebUI request, on all three protocols. A
+compaction sends `tools: []`, and a request carrying tool calls with no tool
+declarations is refused outright by a Bedrock Converse connection
+("Bedrock doesn't support tool calling without `tools=` param specified").
+The Responses protocol is not exempt: Open WebUI forwards to a connection that
+may do its own message conversion, so the router's own hop being
+Responses-shaped proves nothing about what the turn is converted into
+downstream. The bounded call and result records the router already writes into
+the source catalog carry that evidence instead, which is what compaction
+summarizes from in any case.
+
 Every routed request revalidates the saved session against `/api/models`.
 A rejected session requires the explicit login command again; the router never
 opens a browser in the background. Remove local state with:

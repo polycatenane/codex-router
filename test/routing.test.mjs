@@ -6466,7 +6466,7 @@ test("Open WebUI compaction keeps tool evidence out of the provider tool protoco
   }
 });
 
-test("Open WebUI compaction leaves historical tool items untouched on a responses model", async () => {
+test("Open WebUI compaction keeps tool evidence out of the tool protocol on a responses model", async () => {
   const gatewayRequests = [];
   const gateway = await mockServer(async (request, response) => {
     gatewayRequests.push(await bodyJson(request));
@@ -6527,11 +6527,20 @@ test("Open WebUI compaction leaves historical tool items untouched on a response
     assert.equal(gatewayRequests.length, 1);
     const [request] = gatewayRequests;
     assert.deepEqual(request.tools, []);
-    // Unlike the chat/messages compaction test, a responses model's turn
-    // never crosses LiteLLM's Responses -> Chat bridge, so its historical
-    // tool items survive exactly as sent.
-    assert.ok(request.input.some((item) => item?.type === "function_call"));
-    assert.ok(request.input.some((item) => item?.type === "function_call_output"));
+    // A responses-protocol model is filtered exactly like chat and messages.
+    // Open WebUI forwards to a connection that may itself convert the turn for
+    // Bedrock Converse, so the router's own hop being Responses-shaped says
+    // nothing about whether a conversion happens downstream. Leaving these
+    // items in place made every compaction against such a deployment fail with
+    // "Bedrock doesn't support tool calling without `tools=` param specified".
+    assert.ok(request.input.every((item) => item?.type !== "function_call"));
+    assert.ok(request.input.every((item) => item?.type !== "function_call_output"));
+    // The bounded call/result records remain the compaction-safe evidence.
+    const catalog = request.input.at(-2)?.content?.[0]?.text;
+    assert.match(catalog, /ROUTER SOURCE CATALOG/);
+    assert.match(catalog, /"C001"/);
+    assert.match(catalog, /"R001"/);
+    assert.match(catalog, /"tool":"exec_command"/);
   } finally {
     await stopChild(router);
     await closeServer(gateway.server);

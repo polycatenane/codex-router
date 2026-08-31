@@ -2295,15 +2295,17 @@ const OPENWEBUI_COMPACTION_TOOL_ITEMS = new Set([
 ]);
 
 function compactionProviderInput(input, route) {
-  // The filter exists to protect the Responses -> Chat bridge LiteLLM inserts
-  // for chat and messages models; a responses-protocol model's request never
-  // crosses that bridge, so its historical tool items are left exactly as
-  // sent, like every other Responses-native provider.
-  if (
-    providerForModel(route)?.authProfile !== "openwebui-session" ||
-    !["chat", "messages"].includes(route?.openWebUiProtocol) ||
-    !Array.isArray(input)
-  ) {
+  // Applies to every Open WebUI protocol, including responses. The bridge this
+  // protects against is not the router's -- it is the one inside the operator's
+  // Open WebUI deployment, which forwards to a connection that may itself be a
+  // LiteLLM fronting Bedrock Converse and does the message conversion there. So
+  // the router cannot infer that no conversion happens from its own hop being
+  // Responses-shaped: a responses model reached this way still arrives at
+  // Converse, which rejects tool blocks with no toolConfig. Scoping this to
+  // `chat` and `messages` broke compaction outright on such a deployment,
+  // because `tools: []` does not survive as a present `tools` parameter and
+  // LiteLLM then refuses the turn for carrying tool calls without one.
+  if (providerForModel(route)?.authProfile !== "openwebui-session" || !Array.isArray(input)) {
     return input;
   }
   return input.filter((item) => !OPENWEBUI_COMPACTION_TOOL_ITEMS.has(item?.type));
