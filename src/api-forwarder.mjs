@@ -1042,7 +1042,9 @@ function upstreamHeaders(requestHeaders, body, apiKey, provider, extraHeaders = 
   } else {
     headers.Authorization = `Bearer ${apiKey}`;
   }
-  headers["User-Agent"] = `codex-router/${VERSION}`;
+  headers["User-Agent"] = provider.authProfile === "openwebui-session"
+    ? "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+    : `codex-router/${VERSION}`;
   headers["Accept-Encoding"] = "identity";
   Object.assign(headers, extraHeaders);
   // Content-Length is fetch's to compute. An explicit copy is at best
