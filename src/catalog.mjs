@@ -62,6 +62,7 @@ import {
 } from "./native-catalog-source.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
 import { withCatalogPublicationLock } from "./catalog-publication-lock.mjs";
+import { restartCodexAppServerDaemonIfRunning } from "./codex-app-server-daemon.mjs";
 import { genericProviderConfigured } from "./generic-provider-readiness.mjs";
 import { searchSidecarBindingForModel } from "./search-sidecar-state.mjs";
 import { trustedSearchProviderDescriptor } from "./search-sidecar-policy.mjs";
@@ -1193,6 +1194,17 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     // released only after probes and the coupled catalog-file transaction are
     // complete. Every app/CLI/autonomous caller executes this same entrypoint.
     await withCatalogPublicationLock(main);
+    // app-server caches model/list for its process lifetime. Restart only
+    // after the catalog transaction commits and its publication lock is gone,
+    // so the replacement daemon cannot observe a half-written generation.
+    try {
+      restartCodexAppServerDaemonIfRunning();
+    } catch (error) {
+      process.stderr.write(`${JSON.stringify({
+        warning: error?.code || "codex_app_server_daemon_restart_failed",
+        detail: error?.message || String(error),
+      })}\n`);
+    }
   } catch (error) {
     // Ownership conflicts are an operator mistake with a specific remedy, so
     // print the guidance rather than a stack trace.

@@ -71,6 +71,12 @@ each enabled external provider. Native GPT entries are included only when
 `codex login status` confirms an OpenAI login, so signed-out login-free users see
 only their authenticated external models.
 
+Codex app-server caches its `model/list` response for the daemon lifetime. After
+a successful Codex catalog publication, the router restarts an already-running
+managed app-server daemon so desktop and daemon-backed model pickers load the
+new generation. It does not start a stopped daemon, and older Codex builds that
+do not expose daemon management continue without that refresh.
+
 Signed-out catalogs additionally alias external models onto native GPT slugs.
 The ChatGPT desktop app's model menu filters `model/list` results against a
 server-delivered allowlist of native slugs, so an external slug can never
