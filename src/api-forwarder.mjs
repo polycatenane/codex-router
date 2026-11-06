@@ -715,6 +715,16 @@ function normalizeBody(buffer, contentType, route) {
     delete payload.reasoning;
     delete payload.reasoning_effort;
   }
+  // Open WebUI's connection is opaque: a responses-protocol model is forwarded
+  // nearly untouched to whatever backs it, and genai.arizona.edu backs the
+  // gpt-5.6 models with a LiteLLM fronting Bedrock Converse, which refuses
+  // `prompt_cache_key` with UnsupportedParamsError. The cache hints are only
+  // routing optimizations for OpenAI's own prompt cache, so dropping them
+  // costs no correctness on any Open WebUI backend.
+  if (provider.authProfile === "openwebui-session") {
+    delete payload.prompt_cache_key;
+    delete payload.prompt_cache_retention;
+  }
   // Meta refuses `search_content_types` on anything but a `web_search_preview`
   // tool, and Codex only ever sends the current spelling: its hosted search
   // tool is `type: "web_search"`, carrying search_content_types beside

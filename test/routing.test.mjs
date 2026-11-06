@@ -6206,6 +6206,7 @@ test("API forwarder honors an Open WebUI model's reasoning-controls setting", as
       responseBody: { choices: [] },
       body: {
         reasoning_effort: "low",
+        prompt_cache_key: "cache-key",
         messages: [{ role: "user", content: "test" }],
       },
     },
@@ -6216,6 +6217,8 @@ test("API forwarder honors an Open WebUI model's reasoning-controls setting", as
       responseBody: { id: "resp_test", object: "response", output: [] },
       body: {
         reasoning: { effort: "low" },
+        prompt_cache_key: "cache-key",
+        prompt_cache_retention: "24h",
         input: "test",
       },
     },
@@ -6263,6 +6266,9 @@ test("API forwarder honors an Open WebUI model's reasoning-controls setting", as
       // real, and neither ever delivers reasoning to this account.
       assert.equal("reasoning" in upstreamRequests[0], false);
       assert.equal("reasoning_effort" in upstreamRequests[0], false);
+      // A Bedrock Converse backend behind Open WebUI refuses prompt cache hints.
+      assert.equal("prompt_cache_key" in upstreamRequests[0], false);
+      assert.equal("prompt_cache_retention" in upstreamRequests[0], false);
       assert.equal(upstreamRequests[0].model, "test-model");
     } finally {
       await stopChild(forwarder);
