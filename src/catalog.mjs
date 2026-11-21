@@ -61,6 +61,7 @@ import {
   readNativeCatalogSource,
 } from "./native-catalog-source.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
+import { nativeEntitlementHidden } from "./native-entitlement.mjs";
 import { withCatalogPublicationLock } from "./catalog-publication-lock.mjs";
 import { restartCodexAppServerDaemonIfRunning } from "./codex-app-server-daemon.mjs";
 import { genericProviderConfigured } from "./generic-provider-readiness.mjs";
@@ -966,6 +967,16 @@ export function effectivePickerHiddenModels(hiddenModels, nativeBaseSlugs, { log
   return new Set([...hidden].filter((slug) => !native.has(slug)));
 }
 
+export function withNativeEntitlement(catalog, unsupported) {
+  if (!unsupported?.size) return catalog;
+  return {
+    ...catalog,
+    models: catalog.models.map((model) =>
+      unsupported.has(String(model.slug)) ? { ...model, visibility: "hide" } : model,
+    ),
+  };
+}
+
 function main() {
   // The catalog is what Codex offers in its picker. Writing it from a checkout
   // that does not own this state directory is how the picker ends up
@@ -1020,7 +1031,14 @@ function main() {
     userSlugs,
     Date.now(),
   );
-  const captured = nativeCatalog();
+  // A live probe is the one source that knows what this account's plan serves.
+  // Refused models stay in the catalog (so a slug that names one still
+  // resolves) but leave the picker. Login-free mode reuses native slugs as
+  // routed aliases, so the probe has nothing to say there.
+  const captured = withNativeEntitlement(
+    nativeCatalog(),
+    loginFree ? new Set() : nativeEntitlementHidden(),
+  );
   // The router picker overlay is for routed models.  In a normal signed-in
   // Codex install the account's native entries remain Codex-owned; applying a
   // stale router `hidden` decision to them can erase the original Codex picker

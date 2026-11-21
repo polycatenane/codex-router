@@ -14,7 +14,7 @@ $Command = if ($args.Count) { [string]$args[0] } else { "status" }
 $Arguments = @(if ($args.Count -gt 1) { $args[1..($args.Count - 1)] })
 $Commands = @(
   "setup", "install", "doctor", "status", "providers", "provider-key", "caller-key", "key-pool", "search-sidecar", "enable",
-  "disable", "chatgpt-session", "skills", "uninstall", "update", "rollback", "support-bundle",
+  "disable", "chatgpt-session", "native-models", "skills", "uninstall", "update", "rollback", "support-bundle",
   "smoke-test", "start", "stop", "test-model", "discover-models", "local-mlx",
   "signed-routing", "refresh-catalog", "media", "tray", "panel", "companion"
 )
@@ -862,6 +862,7 @@ switch ($Command) {
   "key-pool" { Invoke-RouterNode "src\control.mjs" (@("key-pool") + $Arguments) }
   "search-sidecar" { Invoke-RouterNode "src\search-sidecar-control.mjs" $Arguments }
   "chatgpt-session" { Invoke-RouterNode "src\chatgpt-session.mjs" $Arguments }
+  "native-models" { Invoke-RouterNode "src\native-entitlement.mjs" $Arguments }
   "skills" { Invoke-RouterNode "src\skills-install.mjs" $Arguments }
   # `bin/install` accepts --prepare-only/--migrate-known/--force-deps, so the
   # Windows wrapper has to pass the equivalent switches through instead of

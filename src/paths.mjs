@@ -108,6 +108,9 @@ export const DSH_CATALOG_PATH = path.join(STATE_DIR, "dsh-models.json");
 // is installed.
 export const GEMINI_CATALOG_PATH = path.join(STATE_DIR, "gemini-models.json");
 export const NATIVE_ALIAS_PATH = path.join(STATE_DIR, "native-aliases.json");
+// Which native models a live probe found the signed-in ChatGPT account refuses.
+// Written only by `native-models probe`; the catalog hides what it lists.
+export const NATIVE_ENTITLEMENT_PATH = path.join(STATE_DIR, "native-entitlement.json");
 export const ANNOUNCED_MODELS_PATH = path.join(STATE_DIR, "announced-models.json");
 export const LITELLM_CONFIG_PATH = path.join(STATE_DIR, "litellm.yaml");
 export const INTERNAL_SECRET_PATH = path.join(STATE_DIR, "internal-secret");

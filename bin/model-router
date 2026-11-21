@@ -19,7 +19,7 @@ command writes, not which router it talks to.
 Commands:
   setup, install, doctor, status, provider-key, caller-key, key-pool, providers, search-sidecar, enable, disable,
   chatgpt-session, skills, multi-agent, media, panel, local-mlx, uninstall, smoke-test,
-  start, stop, update, rollback, shim, subagent-preset (dsh only)
+  start, stop, update, rollback, shim, native-models (codex only), subagent-preset (dsh only)
 
 Examples:
   ./bin/model-router codex doctor
@@ -28,6 +28,7 @@ Examples:
   ./bin/model-router codex search-sidecar status
   ./bin/model-router codex local-mlx install --yes
   ./bin/model-router codex chatgpt-session enable
+  ./bin/model-router codex native-models probe
   ./bin/model-router codex skills approve-external codex-router
   ./bin/model-router codex shim install
   ./bin/model-router dsh enable
@@ -66,7 +67,7 @@ case "$target" in
 esac
 
 case "$command" in
-  setup|install|doctor|status|provider-key|caller-key|key-pool|providers|search-sidecar|enable|disable|chatgpt-session|skills|multi-agent|media|panel|local-mlx|uninstall|smoke-test|start|stop|update|rollback|subagent-preset|shim) ;;
+  setup|install|doctor|status|provider-key|caller-key|key-pool|providers|search-sidecar|enable|disable|chatgpt-session|skills|multi-agent|media|panel|local-mlx|uninstall|smoke-test|start|stop|update|rollback|subagent-preset|shim|native-models) ;;
   *) echo "Unknown command: $command" >&2; usage >&2; exit 2 ;;
 esac
 

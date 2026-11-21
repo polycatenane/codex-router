@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 
@@ -115,6 +116,15 @@ function sessionFromAuthDocument(parsed) {
 
 function readSession() {
   return sessionFromAuthDocument(readAuthDocument());
+}
+
+// A stable, non-reversible identity for the signed-in ChatGPT account, so a
+// record about one account's entitlement is never applied to another. Only a
+// hash of the account id leaves this module, never a token.
+export function nativeAccountFingerprint() {
+  const accountId = readSession()?.accountId;
+  if (!accountId) return undefined;
+  return createHash("sha256").update(`codex-router-account:${accountId}`).digest("hex");
 }
 
 // Authenticate a bearer that claims to be the already-signed-in Codex client.
